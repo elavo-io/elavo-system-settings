@@ -101,11 +101,30 @@ pub async fn overview(conn: &gio::DBusConnection) -> Overview {
     overview
 }
 
+/// Clear a software block on every Bluetooth radio. BlueZ leaves the
+/// adapter in `off-blocked` while rfkill is set, and powering it on then
+/// fails with no useful message. The session can write `/dev/rfkill`.
+fn unblock_radio() -> std::io::Result<()> {
+    use std::io::Write;
+    // `struct rfkill_event`, version 1: idx, type, op, soft, hard.
+    // Type 2 is Bluetooth. Op 3 applies to every device of that type.
+    let mut event = [0u8; 8];
+    event[4] = 2;
+    event[5] = 3;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/rfkill")?;
+    file.write_all(&event)
+}
+
 pub async fn set_powered(
     conn: &gio::DBusConnection,
     adapter: &str,
     on: bool,
 ) -> Result<(), glib::Error> {
+    if on {
+        let _ = unblock_radio();
+    }
     dbus::set(conn, BLUEZ, adapter, ADAPTER, "Powered", on.to_variant()).await
 }
 
