@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=System Settings
+GenericName=Settings
+Comment=Wi-Fi, displays, sound, appearance, users, and updates
+Exec=elavo-system-settings
+Icon=io.elavo.SystemSettings
+Terminal=false
+Categories=GTK;Settings;DesktopSettings;
+Keywords=preferences;settings;control;general;wifi;bluetooth;network;display;sound;dock;accent;dark;keyboard;mouse;trackpad;battery;energy;lock;users;time;storage;software update;about;
+StartupNotify=true

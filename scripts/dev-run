@@ -1,0 +1,24 @@
+#!/bin/sh
+# Build System Settings in the toolbox and run it on the host session.
+# Usage: scripts/dev-run [--pane ID]
+#
+# Host and toolbox are both Fedora 44, so the GTK they link against is the
+# same. Actions that need the helper call pkexec on the installed helper; run
+# `scripts/install` into the image (or a test system) to try those.
+set -eu
+
+cd "$(dirname "$0")/.."
+toolbox_name="${ELAVO_TOOLBOX:-elavo-dev}"
+
+toolbox run -c "${toolbox_name}" cargo build
+
+# A running instance would take the arguments as a remote command and the
+# new build would never start.
+if pkill -x elavo-system-se 2>/dev/null; then
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        pgrep -x elavo-system-se >/dev/null || break
+        sleep 0.3
+    done
+fi
+
+exec target/debug/elavo-system-settings "$@"

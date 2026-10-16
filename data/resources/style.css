@@ -1,0 +1,205 @@
+/* System Settings. Colors come from the GTK theme; only shape and spacing
+ * are set here, plus the sidebar tiles, which are fixed colors on purpose. */
+
+.settings-sidebar {
+  background-color: alpha(currentColor, 0.04);
+}
+
+.settings-sidebar searchentry {
+  margin: 10px 10px 6px;
+}
+
+.settings-sidebar list {
+  background: transparent;
+  padding: 0 8px 10px;
+}
+
+.settings-sidebar row {
+  border-radius: 6px;
+  padding: 3px 6px;
+  min-height: 26px;
+}
+
+.settings-sidebar row:selected {
+  background-color: var(--accent-bg-color, @accent_bg_color);
+  color: var(--accent-fg-color, @accent_fg_color);
+}
+
+.settings-sidebar .user-card {
+  margin: 0 8px 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+
+.user-card-name {
+  font-weight: bold;
+}
+
+.settings-sidebar .group-gap {
+  min-height: 12px;
+}
+
+.pane-tile {
+  border-radius: 6px;
+  min-width: 22px;
+  min-height: 22px;
+  color: white;
+}
+
+.pane-tile.large {
+  border-radius: 13px;
+  min-width: 60px;
+  min-height: 60px;
+}
+
+.pane-tile.blue { background-color: #0a7aff; }
+.pane-tile.indigo { background-color: #5856d6; }
+.pane-tile.purple { background-color: #8a4fd8; }
+.pane-tile.pink { background-color: #d6337f; }
+.pane-tile.red { background-color: #e5453b; }
+.pane-tile.orange { background-color: #f08a24; }
+.pane-tile.yellow { background-color: #e0a800; }
+.pane-tile.green { background-color: #34a853; }
+.pane-tile.teal { background-color: #1ba5b8; }
+.pane-tile.graphite { background-color: #8e8e93; }
+.pane-tile.dark { background-color: #3a3a3c; }
+
+.pane {
+  padding: 18px 24px 28px;
+}
+
+.pane > label.heading,
+.group-title {
+  margin: 10px 4px 2px;
+  font-weight: bold;
+}
+
+.pane frame {
+  border-radius: 10px;
+}
+
+.pane frame > list {
+  border-radius: 10px;
+  background: transparent;
+}
+
+.pane list > row {
+  padding: 8px 12px;
+  min-height: 32px;
+}
+
+.pane .caption,
+.caption {
+  opacity: 0.65;
+  font-size: smaller;
+}
+
+.pane-title {
+  font-weight: bold;
+}
+
+.placeholder-pane {
+  padding: 48px;
+}
+
+.placeholder-pane image {
+  opacity: 0.5;
+}
+
+.accent-swatch {
+  border-radius: 999px;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border: 2px solid transparent;
+}
+
+.accent-swatch:checked {
+  border-color: alpha(currentColor, 0.55);
+}
+
+.appearance-card {
+  border-radius: 10px;
+  padding: 6px;
+  border: 2px solid transparent;
+  background: transparent;
+}
+
+.appearance-card:checked {
+  border-color: var(--accent-bg-color, @accent_bg_color);
+}
+
+.appearance-thumb {
+  border-radius: 6px;
+  min-width: 120px;
+  min-height: 76px;
+  border: 1px solid alpha(black, 0.15);
+}
+
+.appearance-thumb.light { background: linear-gradient(#f5f5f7, #e6e6ea); }
+.appearance-thumb.dark { background: linear-gradient(#3a3a3c, #1c1c1e); }
+
+.display-canvas {
+  border-radius: 10px;
+  background-color: alpha(currentColor, 0.05);
+}
+
+.about-name {
+  font-size: 26px;
+  font-weight: bold;
+}
+
+.about-version {
+  opacity: 0.6;
+}
+
+.user-avatar {
+  border-radius: 999px;
+  min-width: 48px;
+  min-height: 48px;
+  background-color: #8e8e93;
+  color: white;
+  font-size: 20px;
+  font-weight: bold;
+}
+
+.user-avatar.small {
+  min-width: 34px;
+  min-height: 34px;
+  font-size: 15px;
+}
+
+.hub-header {
+  margin: 4px 24px 10px;
+}
+
+.hub-title {
+  font-size: 17px;
+  font-weight: bold;
+}
+
+.nav-chevron {
+  opacity: 0.45;
+}
+
+.storage-bar trough {
+  min-height: 12px;
+  border-radius: 6px;
+}
+
+.storage-bar block.filled {
+  border-radius: 6px;
+}
+
+.level-bar-input trough {
+  min-height: 6px;
+}
+
+.monospace-log {
+  font-family: monospace;
+  font-size: smaller;
+}
+
+.signal-strength {
+  opacity: 0.7;
+}

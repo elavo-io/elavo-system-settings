@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- One action per helper command. pkexec matches the helper's path and
+     its first argument, so each command has its own message. -->
+<policyconfig>
+  <vendor>Elavo</vendor>
+  <vendor_url>https://github.com/elavo-io</vendor_url>
+  <icon_name>io.elavo.SystemSettings</icon_name>
+
+  <action id="io.elavo.SystemSettings.update-check">
+    <description>Check for system updates</description>
+    <message>Authentication is required to check for system updates.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">check</annotate>
+  </action>
+
+  <action id="io.elavo.SystemSettings.update-upgrade">
+    <description>Download a system update</description>
+    <message>Authentication is required to download a system update.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">upgrade</annotate>
+  </action>
+
+  <action id="io.elavo.SystemSettings.update-switch">
+    <description>Change the update channel</description>
+    <message>Authentication is required to change the update channel.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">switch</annotate>
+  </action>
+
+  <action id="io.elavo.SystemSettings.update-rollback">
+    <description>Go back to the previous system version</description>
+    <message>Authentication is required to go back to the previous system version.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">rollback</annotate>
+  </action>
+
+  <action id="io.elavo.SystemSettings.power-lid">
+    <description>Change what closing the lid does</description>
+    <message>Authentication is required to change what closing the lid does.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">lid</annotate>
+  </action>
+</policyconfig>

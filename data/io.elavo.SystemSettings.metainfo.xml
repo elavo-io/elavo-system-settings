@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.elavo.SystemSettings</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>System Settings</name>
+  <summary>Settings for the Elavo desktop</summary>
+  <description>
+    <p>
+      Wi-Fi, Bluetooth, and network; sound; appearance and accent color;
+      the dock, displays, and battery; the lock screen and users; keyboard,
+      mouse, and trackpad. General holds software updates, storage, date
+      and time, and information about this computer.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.elavo.SystemSettings.desktop</launchable>
+  <url type="homepage">https://github.com/elavo-io/elavo-system-settings</url>
+  <developer id="io.elavo">
+    <name>Elavo contributors</name>
+  </developer>
+  <provides>
+    <binary>elavo-system-settings</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" date="2026-10-15"/>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>

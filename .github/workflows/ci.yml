@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container: registry.fedoraproject.org/fedora:44
+    steps:
+      - name: Install build dependencies
+        run: >
+          dnf5 install -y git gtk4-devel wayland-devel pulseaudio-libs-devel
+          rust cargo clippy rustfmt gcc pkgconf-pkg-config
+          desktop-file-utils appstream polkit
+      - uses: actions/checkout@v4
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test
+      - name: Release build
+        run: cargo build --release
+      - name: Validate data files
+        run: |
+          desktop-file-validate data/io.elavo.SystemSettings.desktop
+          appstreamcli validate --no-net data/io.elavo.SystemSettings.metainfo.xml
