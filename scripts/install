@@ -16,10 +16,6 @@ install -Dm755 target/release/elavo-system-settings-helper \
 install -Dm644 "data/${id}.desktop" "${dest}${prefix}/share/applications/${id}.desktop"
 install -Dm644 "data/${id}.metainfo.xml" "${dest}${prefix}/share/metainfo/${id}.metainfo.xml"
 install -Dm644 "data/${id}.policy" "${dest}${prefix}/share/polkit-1/actions/${id}.policy"
-for size in 256x256 512x512; do
-    install -Dm644 "data/icons/hicolor/${size}/apps/${id}.png" \
-        "${dest}${prefix}/share/icons/hicolor/${size}/apps/${id}.png"
-done
 
 for po in po/*.po; do
     [ -e "${po}" ] || continue

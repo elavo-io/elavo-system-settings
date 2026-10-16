@@ -389,7 +389,7 @@ Encoding=UTF-8
 [X-GNOME-Metatheme]
 GtkTheme=Elavo-user
 MetacityTheme=Elavo
-IconTheme=Adwaita
+IconTheme=Elavo
 CursorTheme=Adwaita
 ButtonLayout=close,minimize,maximize:
 ";
