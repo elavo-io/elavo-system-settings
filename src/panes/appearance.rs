@@ -194,7 +194,7 @@ pub fn build() -> gtk::Widget {
         ],
     ));
     page.append(&widgets::caption(&tr(
-        "Apps you open from now on use the new color. Apps that are already open change the next time you open them.",
+        "The color changes in open applications.",
     )));
     page.upcast()
 }

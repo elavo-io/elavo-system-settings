@@ -43,7 +43,7 @@ Settings… item uses `--pane dock`.
 | Setting | Stored in |
 | --- | --- |
 | Light or dark | gsettings `org.gnome.desktop.interface color-scheme` |
-| Accent color | `~/.config/gtk-4.0/elavo-accent.css` and gsettings `accent-color` |
+| Accent color | `~/.local/share/themes/Elavo-user` (imports Elavo) and the `Elavo-mirror` symlink, `~/.config/gtk-4.0/elavo-accent.css`, and gsettings `accent-color` and `gtk-theme`. The theme name reloads apps that load the theme. A high-contrast round trip reloads libadwaita apps such as Files. Blue stays on the Elavo theme. |
 | 24-hour time | gsettings `org.gnome.desktop.interface clock-format` |
 | Lock and display-off times | `~/.config/elavo/idle.conf`, read by `elavo-idle.service` |
 | What Lens shows | `~/.config/elavo/lens.conf` |
