@@ -24,6 +24,7 @@ mod sound;
 mod storage;
 mod updates;
 mod users;
+mod wallpaper;
 
 use crate::i18n::tr;
 
@@ -173,10 +174,10 @@ pub fn all() -> Vec<Pane> {
             title: || tr("Wallpaper"),
             icon: "preferences-desktop-wallpaper-symbolic",
             color: "teal",
-            keywords: &["background", "desktop picture"],
+            keywords: &["background", "desktop picture", "dynamic"],
             group: 3,
             parent: None,
-            build: placeholders::wallpaper,
+            build: wallpaper::build,
         },
         Pane {
             id: "screensaver",

@@ -25,7 +25,8 @@ pub async fn run(args: &[&str], line: impl Fn(&str)) -> Result<(), String> {
         let reader = gio::DataInputStream::new(&stdout);
         while let Ok(Some(text)) = reader.read_line_utf8_future(glib::Priority::DEFAULT).await {
             let text = text.trim_end();
-            if !text.is_empty() {
+            // A progress report is not the failure people should read.
+            if !text.is_empty() && !text.starts_with("ELAVO_PROGRESS ") {
                 last = text.to_owned();
             }
             line(text);

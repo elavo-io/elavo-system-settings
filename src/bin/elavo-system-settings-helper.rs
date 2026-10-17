@@ -13,8 +13,12 @@
 //! elavo-system-settings-helper lid suspend|lock|ignore|poweroff
 //! ```
 
+use std::io::{BufRead, BufReader, Write};
+use std::os::fd::FromRawFd;
 use std::path::Path;
-use std::process::{Command as Process, ExitCode};
+use std::process::{Command as Process, ExitCode, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 const LID_DROPIN_DIR: &str = "/etc/systemd/logind.conf.d";
 const LID_DROPIN: &str = "/etc/systemd/logind.conf.d/50-elavo-lid.conf";
@@ -118,6 +122,88 @@ fn run(mut p: Process) -> Result<(), String> {
     }
 }
 
+fn emit_line(out: &Mutex<std::io::Stdout>, line: &str) {
+    if let Ok(mut o) = out.lock() {
+        let _ = writeln!(o, "{line}");
+        let _ = o.flush();
+    }
+}
+
+/// `--quiet` hides bootc's own redraws. `--progress-fd` is the pipe bootc
+/// writes JSON progress to. Call this before the image name: that argument
+/// is positional.
+fn attach_progress(p: &mut Process) -> Result<(i32, i32), String> {
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err("could not watch the download".into());
+    }
+    p.arg("--quiet");
+    p.arg("--progress-fd");
+    p.arg(fds[1].to_string());
+    Ok((fds[0], fds[1]))
+}
+
+/// Each progress event is one `ELAVO_PROGRESS ` line on stdout, so Software
+/// Update can draw a bar. The write end is inherited by bootc and closed
+/// here afterwards.
+fn run_with_progress(mut p: Process, (read_fd, write_fd): (i32, i32)) -> Result<(), String> {
+    p.stdout(Stdio::piped());
+    p.stderr(Stdio::piped());
+    let spawned = p.spawn();
+    if spawned.is_err() {
+        unsafe {
+            libc::close(read_fd);
+            libc::close(write_fd);
+        }
+    }
+    let mut child = spawned.map_err(|e| e.to_string())?;
+    unsafe { libc::close(write_fd) };
+
+    let out = Arc::new(Mutex::new(std::io::stdout()));
+    let progress = {
+        let out = Arc::clone(&out);
+        thread::spawn(move || {
+            let file = unsafe { std::fs::File::from_raw_fd(read_fd) };
+            for line in BufReader::new(file).lines() {
+                let Ok(line) = line else { break };
+                if !line.is_empty() {
+                    emit_line(&out, &format!("ELAVO_PROGRESS {line}"));
+                }
+            }
+        })
+    };
+    let mut copies = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        let out = Arc::clone(&out);
+        copies.push(thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                emit_line(&out, &line);
+            }
+        }));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let out = Arc::clone(&out);
+        copies.push(thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                let Ok(line) = line else { break };
+                emit_line(&out, &line);
+            }
+        }));
+    }
+    let status = child.wait();
+    let _ = progress.join();
+    for copy in copies {
+        let _ = copy.join();
+    }
+    let status = status.map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{status}"))
+    }
+}
+
 struct Booted {
     image: String,
     transport: String,
@@ -149,11 +235,12 @@ fn execute(command: Command) -> Result<(), String> {
             p.args(["upgrade", "--check"]);
             p
         }),
-        Command::Upgrade => run({
+        Command::Upgrade => {
             let mut p = tool("bootc");
             p.arg("upgrade");
-            p
-        }),
+            let fds = attach_progress(&mut p)?;
+            run_with_progress(p, fds)
+        }
         Command::Rollback => run({
             let mut p = tool("bootc");
             p.arg("rollback");
@@ -173,8 +260,9 @@ fn execute(command: Command) -> Result<(), String> {
             if current.signed {
                 p.arg("--enforce-container-sigpolicy");
             }
+            let fds = attach_progress(&mut p)?;
             p.arg(&target);
-            run(p)
+            run_with_progress(p, fds)
         }
         Command::Lid(lid) => {
             std::fs::create_dir_all(LID_DROPIN_DIR).map_err(|e| e.to_string())?;

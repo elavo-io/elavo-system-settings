@@ -4,14 +4,6 @@
 use crate::i18n::tr;
 use crate::widgets;
 
-pub fn wallpaper() -> gtk::Widget {
-    widgets::placeholder(
-        "preferences-desktop-wallpaper-symbolic",
-        &tr("Wallpaper"),
-        &tr("Choosing a desktop picture comes in a later release, when the desktop draws its own background."),
-    )
-}
-
 pub fn screensaver() -> gtk::Widget {
     widgets::placeholder(
         "preferences-desktop-screensaver-symbolic",

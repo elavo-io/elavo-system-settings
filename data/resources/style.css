@@ -139,6 +139,23 @@
 .appearance-thumb.light { background: linear-gradient(#f5f5f7, #e6e6ea); }
 .appearance-thumb.dark { background: linear-gradient(#3a3a3c, #1c1c1e); }
 
+.wallpaper-card {
+  border-radius: 10px;
+  padding: 6px;
+  border: 2px solid transparent;
+  background: transparent;
+}
+
+.wallpaper-card:checked {
+  border-color: var(--accent-bg-color, @accent_bg_color);
+}
+
+.wallpaper-thumb {
+  border-radius: 6px;
+  min-width: 168px;
+  min-height: 94px;
+}
+
 .display-canvas {
   border-radius: 10px;
   background-color: alpha(currentColor, 0.05);

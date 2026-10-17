@@ -19,3 +19,4 @@ pub mod pulse;
 pub mod sysinfo;
 pub mod timedate;
 pub mod updates;
+pub mod wallpaper;

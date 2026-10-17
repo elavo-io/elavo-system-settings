@@ -27,6 +27,10 @@ struct Pane {
     rollback_detail: gtk::Label,
     log: gtk::Label,
     spinner: gtk::Spinner,
+    progress: gtk::ProgressBar,
+    notes: gtk::Label,
+    channel_note: gtk::Label,
+    download_started: RefCell<Option<std::time::Instant>>,
     status: RefCell<Status>,
     busy: std::cell::Cell<bool>,
     syncing: std::cell::Cell<bool>,
@@ -76,7 +80,7 @@ impl Pane {
         });
     }
 
-    fn render(&self, s: Status) {
+    fn render(self: &Rc<Self>, s: Status) {
         let booted = s.booted.clone().unwrap_or_default();
         self.summary.set_label(&match booted.channel() {
             Some(c) => format!("Elavo · {}", channel_label(c)),
@@ -112,7 +116,77 @@ impl Pane {
             }
             None => self.rollback_row.set_visible(false),
         }
+        if let Some(staged) = s.staged.clone() {
+            self.show_notes(updates::at_digest(&staged.image, &staged.digest));
+        }
         self.status.replace(s);
+        self.note_stable();
+    }
+
+    fn show_notes(self: &Rc<Self>, image: String) {
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let Some(text) = updates::changelog(&image).await else {
+                return;
+            };
+            this.notes
+                .set_label(&format!("{}\n{text}", tr("What's new")));
+            this.notes.set_visible(true);
+        });
+    }
+
+    /// Latest stays what this computer follows. The note only appears once
+    /// a stable release is posted, so the choice is visible.
+    fn note_stable(self: &Rc<Self>) {
+        let Some(image) = self
+            .status
+            .borrow()
+            .booted
+            .as_ref()
+            .filter(|b| b.channel() == Some("latest"))
+            .and_then(|b| updates::with_tag(&b.image, "stable"))
+        else {
+            self.channel_note.set_visible(false);
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            if updates::tag_exists(&image).await {
+                this.channel_note.set_label(&tr(
+                    "A stable release is posted. This computer follows Latest until you switch to Stable.",
+                ));
+                this.channel_note.set_visible(true);
+            }
+        });
+    }
+
+    fn show_download(&self, version: &str, got: updates::Download) {
+        self.spinner.set_visible(false);
+        self.progress.set_visible(true);
+        self.detail.set_label(&format!(
+            "{version}\n{} {}",
+            updates::format_bytes(got.bytes_total),
+            tr("to download")
+        ));
+        self.progress
+            .set_fraction(got.bytes as f64 / got.bytes_total as f64);
+        let mut started = self.download_started.borrow_mut();
+        if started.is_none() && got.bytes > 0 {
+            *started = Some(std::time::Instant::now());
+        }
+        let remaining = started.and_then(|t| {
+            updates::seconds_left(t.elapsed().as_secs_f64(), got.bytes, got.bytes_total)
+        });
+        let mut text = format!(
+            "{} {} {}",
+            updates::format_bytes(got.bytes),
+            tr("of"),
+            updates::format_bytes(got.bytes_total)
+        );
+        if let Some(seconds) = remaining {
+            text = format!("{text} · {}", updates::format_remaining(seconds));
+        }
+        self.progress.set_text(Some(&text));
     }
 
     fn set_busy(&self, busy: bool) {
@@ -129,16 +203,26 @@ impl Pane {
     async fn run(self: &Rc<Self>, args: &[&str]) -> Result<String, String> {
         self.set_busy(true);
         self.log.set_label("");
+        self.progress.set_visible(false);
+        self.progress.set_fraction(0.0);
+        *self.download_started.borrow_mut() = None;
+        let version = self.detail.text().lines().next().unwrap_or("").to_owned();
         let output = Rc::new(RefCell::new(String::new()));
         let out = output.clone();
         let log = self.log.clone();
+        let this = self.clone();
         let result = helper::run(args, move |line| {
+            if let Some(got) = updates::download_progress(line) {
+                this.show_download(&version, got);
+                return;
+            }
             let mut o = out.borrow_mut();
             o.push_str(line);
             o.push('\n');
             log.set_label(o.trim_end());
         })
         .await;
+        self.progress.set_visible(false);
         self.set_busy(false);
         let text = output.borrow().clone();
         result.map(|()| text)
@@ -164,6 +248,19 @@ impl Pane {
                     this.detail
                         .set_label(&format!("{}\n{note}", this.detail.text()));
                     this.install.set_visible(!none);
+                    if !none {
+                        if let Some(image) = this
+                            .status
+                            .borrow()
+                            .booted
+                            .as_ref()
+                            .map(|b| b.image.clone())
+                        {
+                            this.show_notes(image);
+                        }
+                    } else if this.status.borrow().staged.is_none() {
+                        this.notes.set_visible(false);
+                    }
                 }
                 Err(e) => {
                     this.refresh();
@@ -176,7 +273,9 @@ impl Pane {
     fn install(self: &Rc<Self>) {
         let this = self.clone();
         glib::spawn_future_local(async move {
-            this.detail.set_label(&tr("Downloading the update…"));
+            let version = this.detail.text().lines().next().unwrap_or("").to_owned();
+            this.detail
+                .set_label(&format!("{version}\n{}", tr("Downloading the update…")));
             let result = this.run(&["upgrade"]).await;
             this.refresh();
             if let Err(e) = result {
@@ -217,7 +316,9 @@ impl Pane {
             )
             .await;
             if ok {
-                this.detail.set_label(&tr("Switching channel…"));
+                let version = this.detail.text().lines().next().unwrap_or("").to_owned();
+                this.detail
+                    .set_label(&format!("{version}\n{}", tr("Switching channel…")));
                 if let Err(e) = this.run(&["switch", tag]).await {
                     widgets::show_error(
                         &this.channel,
@@ -300,8 +401,22 @@ pub fn build() -> gtk::Widget {
         .hexpand(true)
         .valign(gtk::Align::Center)
         .build();
+    let progress = gtk::ProgressBar::builder()
+        .hexpand(true)
+        .show_text(true)
+        .visible(false)
+        .build();
+    let notes = gtk::Label::builder()
+        .css_classes(["dim-label"])
+        .xalign(0.0)
+        .wrap(true)
+        .selectable(true)
+        .visible(false)
+        .build();
     text.append(&summary);
     text.append(&detail);
+    text.append(&progress);
+    text.append(&notes);
     let spinner = gtk::Spinner::builder().visible(false).build();
     let check = gtk::Button::with_label(&tr("Check for Updates"));
     let install = gtk::Button::builder()
@@ -365,6 +480,9 @@ pub fn build() -> gtk::Widget {
         .child(&log)
         .build();
     page.append(&expander);
+    let channel_note = widgets::caption("");
+    channel_note.set_visible(false);
+    page.append(&channel_note);
     page.append(&widgets::caption(&tr(
         "Elavo updates as a whole image. The current version stays available, so you can go back if something is wrong.",
     )));
@@ -381,6 +499,10 @@ pub fn build() -> gtk::Widget {
         rollback_detail,
         log,
         spinner,
+        progress,
+        notes,
+        channel_note,
+        download_started: RefCell::default(),
         status: RefCell::default(),
         busy: Default::default(),
         syncing: Default::default(),
