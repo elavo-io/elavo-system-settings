@@ -151,6 +151,9 @@ pub fn build() -> gtk::Widget {
             .0,
         );
     }
+    if let Some(fedora) = sysinfo::os_release("VERSION_ID") {
+        rows.push(widgets::value_row(&tr("Fedora Version"), &fedora).0);
+    }
     if let Some(kernel) = sysinfo::kernel() {
         rows.push(widgets::value_row(&tr("Kernel"), &kernel).0);
     }
