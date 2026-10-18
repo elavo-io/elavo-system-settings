@@ -1,7 +1,8 @@
 //! Mouse and Trackpad, written to the user `rc.xml` `<libinput>` section:
 //! the `non-touch` category for mice and `touchpad` for trackpads. A
 //! value the person has not set falls back to the system file's `default`
-//! device, which is where the image turns natural scrolling on.
+//! device, which is where the image turns natural scrolling and two-finger
+//! right-click on.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -21,8 +22,45 @@ fn path<'a>(category: &'a str, key: &'a str) -> [Seg<'a>; 3] {
     ]
 }
 
+/// labwc `<clickMethod>`. A two-finger click is the right-click. Clicking
+/// the bottom-right corner is the other choice. A clickpad uses one method.
+const CLICK_FINGER: &str = "clickfinger";
+const CLICK_CORNER: &str = "buttonAreas";
+
 fn read(category: &str, key: &str) -> Option<String> {
+    if category == "touchpad" && key == "clickMethod" {
+        return Some(read_click_method());
+    }
     labwc::get_merged(&path(category, key)).or_else(|| labwc::get_merged(&path("default", key)))
+}
+
+/// The click method actually in effect. A touchpad block that omits
+/// `<clickMethod>` uses libinput's corner click; it does not inherit the
+/// `default` device, because labwc treats the block as a whole.
+fn read_click_method() -> String {
+    let touchpad = labwc::get_merged(&path("touchpad", "clickMethod"));
+    let block = keys("touchpad").iter().any(|(key, _)| {
+        *key != "clickMethod" && labwc::get_merged(&path("touchpad", key)).is_some()
+    });
+    let default_device = labwc::get_merged(&path("default", "clickMethod"));
+    effective_click_method(touchpad.as_deref(), block, default_device.as_deref()).to_owned()
+}
+
+fn effective_click_method(
+    touchpad: Option<&str>,
+    touchpad_block: bool,
+    default_device: Option<&str>,
+) -> &'static str {
+    match touchpad {
+        Some(CLICK_CORNER) => CLICK_CORNER,
+        Some(CLICK_FINGER) => CLICK_FINGER,
+        Some(_) => CLICK_FINGER,
+        None if touchpad_block => CLICK_CORNER,
+        None => match default_device {
+            Some(CLICK_CORNER) => CLICK_CORNER,
+            _ => CLICK_FINGER,
+        },
+    }
 }
 
 fn read_bool(category: &str, key: &str, default: bool) -> bool {
@@ -51,6 +89,7 @@ fn keys(category: &str) -> &'static [(&'static str, &'static str)] {
             ("pointerSpeed", "0.00"),
             ("naturalScroll", "yes"),
             ("tap", "yes"),
+            ("clickMethod", CLICK_FINGER),
             ("disableWhileTyping", "yes"),
         ]
     } else {
@@ -119,6 +158,31 @@ fn switch_row(
     row
 }
 
+fn secondary_click_row(status: &gtk::Label) -> gtk::ListBoxRow {
+    let labels = [
+        tr("Click with two fingers"),
+        tr("Click the bottom-right corner"),
+    ];
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let dropdown = gtk::DropDown::from_strings(&refs);
+    let corner = read("touchpad", "clickMethod").as_deref() == Some(CLICK_CORNER);
+    dropdown.set_selected(u32::from(corner));
+    let status = status.clone();
+    dropdown.connect_selected_notify(move |dropdown| {
+        let value = if dropdown.selected() == 1 {
+            CLICK_CORNER
+        } else {
+            CLICK_FINGER
+        };
+        write(&status, "touchpad", "clickMethod", value.to_owned());
+    });
+    widgets::row_with_subtitle(
+        &tr("Secondary click"),
+        Some(&tr("Right-click on the trackpad.")),
+        &dropdown,
+    )
+}
+
 fn has_touchpad() -> bool {
     std::fs::read_to_string("/proc/bus/input/devices")
         .map(|t| {
@@ -166,6 +230,7 @@ pub fn build_trackpad() -> gtk::Widget {
                 "tap",
                 true,
             ),
+            secondary_click_row(&status),
             switch_row(
                 &status,
                 &tr("Ignore the trackpad while typing"),
@@ -194,4 +259,42 @@ pub fn build_trackpad() -> gtk::Widget {
     }
     page.append(&status);
     page.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_finger_click_is_the_default_right_click() {
+        assert_eq!(effective_click_method(None, false, None), CLICK_FINGER);
+        assert_eq!(
+            effective_click_method(None, false, Some(CLICK_FINGER)),
+            CLICK_FINGER
+        );
+        assert_eq!(
+            effective_click_method(Some(CLICK_FINGER), false, Some(CLICK_CORNER)),
+            CLICK_FINGER
+        );
+        assert!(keys("touchpad").contains(&("clickMethod", CLICK_FINGER)));
+        assert!(!keys("non-touch")
+            .iter()
+            .any(|(key, _)| *key == "clickMethod"));
+    }
+
+    #[test]
+    fn bottom_right_stays_available_and_an_old_block_keeps_it() {
+        assert_eq!(
+            effective_click_method(Some(CLICK_CORNER), false, Some(CLICK_FINGER)),
+            CLICK_CORNER
+        );
+        assert_eq!(
+            effective_click_method(None, true, Some(CLICK_FINGER)),
+            CLICK_CORNER
+        );
+        assert_eq!(
+            effective_click_method(Some("none"), false, None),
+            CLICK_FINGER
+        );
+    }
 }
