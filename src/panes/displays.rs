@@ -531,15 +531,9 @@ impl Pane {
     }
 
     fn confirm_keep(self: &Rc<Self>, before: Vec<Edit>, after: Vec<Edit>) {
-        let window = gtk::Window::builder()
-            .title(tr("Keep these display settings?"))
-            .modal(true)
-            .resizable(false)
-            .default_width(360)
-            .build();
-        if let Some(parent) = widgets::parent_window(&self.root) {
-            window.set_transient_for(Some(&parent));
-        }
+        let window = widgets::popup_window(&self.root, &tr("Keep these display settings?"));
+        window.set_resizable(false);
+        window.set_default_width(360);
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(10)

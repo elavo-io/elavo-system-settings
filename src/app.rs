@@ -22,8 +22,17 @@ fn window(app: &gtk::Application) -> Rc<Window> {
         return w;
     }
     let w = Window::new(app);
+    // Closing the window hides it and quits, so it is never destroyed (see
+    // `widgets::popup_window`).
+    w.window.set_hide_on_close(true);
+    let a = app.downgrade();
+    w.window.connect_hide(move |_| {
+        if let Some(app) = a.upgrade() {
+            app.quit();
+        }
+    });
     w.window.connect_destroy(|_| {
-        WINDOW.with(|w| w.replace(None));
+        let _ = WINDOW.try_with(|w| w.replace(None));
     });
     WINDOW.with(|cell| cell.replace(Some(w.clone())));
     w
@@ -125,19 +134,29 @@ fn add_actions(app: &gtk::Application) {
 
     let about = gio::SimpleAction::new("about", None);
     let a = app.downgrade();
+    let shown: RefCell<Option<gtk::AboutDialog>> = RefCell::default();
     about.connect_activate(move |_, _| {
         let Some(app) = a.upgrade() else {
             return;
         };
-        let dialog = gtk::AboutDialog::builder()
-            .program_name(tr("System Settings"))
-            .logo_icon_name(crate::APP_ID)
-            .version(env!("CARGO_PKG_VERSION"))
-            .license_type(gtk::License::MitX11)
-            .website(HELP_URL)
-            .modal(true)
-            .build();
-        if let Some(parent) = app.active_window() {
+        let dialog = shown
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                gtk::AboutDialog::builder()
+                    .program_name(tr("System Settings"))
+                    .logo_icon_name(crate::APP_ID)
+                    .version(env!("CARGO_PKG_VERSION"))
+                    .license_type(gtk::License::MitX11)
+                    .website(HELP_URL)
+                    .modal(true)
+                    .hide_on_close(true)
+                    .build()
+            })
+            .clone();
+        if let Some(parent) = app
+            .active_window()
+            .filter(|w| w != dialog.upcast_ref::<gtk::Window>())
+        {
             dialog.set_transient_for(Some(&parent));
         }
         dialog.present();

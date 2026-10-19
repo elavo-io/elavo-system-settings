@@ -276,6 +276,62 @@ pub fn parent_window(widget: &impl IsA<gtk::Widget>) -> Option<gtk::Window> {
     widget.root().and_downcast::<gtk::Window>()
 }
 
+/// A modal window over `widget`'s window. Closing it hides it. GTK 4.22.5
+/// destroys a window's icon buffers a second time when the window is
+/// destroyed, which crashes the app, so no window here is ever destroyed.
+pub fn popup_window(widget: &impl IsA<gtk::Widget>, title: &str) -> gtk::Window {
+    let window = gtk::Window::builder()
+        .title(title)
+        .modal(true)
+        .hide_on_close(true)
+        .build();
+    if let Some(parent) = parent_window(widget) {
+        window.set_transient_for(Some(&parent));
+    }
+    window
+}
+
+/// A question with a row of buttons, in the window `gtk::AlertDialog` uses.
+/// Returns the index of the pressed button, or `cancel` when the window is
+/// closed another way. Hidden afterwards, not destroyed (see `popup_window`).
+#[allow(deprecated)]
+pub async fn choose(
+    widget: &impl IsA<gtk::Widget>,
+    message: &str,
+    detail: &str,
+    buttons: &[&str],
+    cancel: usize,
+    default: usize,
+) -> usize {
+    let dialog = gtk::MessageDialog::builder()
+        .text(message)
+        .modal(true)
+        .hide_on_close(true)
+        .build();
+    if !detail.is_empty() {
+        dialog.set_property("secondary-text", detail);
+    }
+    if let Some(parent) = parent_window(widget) {
+        dialog.set_transient_for(Some(&parent));
+    }
+    for (i, label) in buttons.iter().enumerate() {
+        dialog.add_button(label, gtk::ResponseType::Other(i as u16));
+    }
+    dialog.set_default_response(gtk::ResponseType::Other(default as u16));
+
+    let (tx, rx) = async_channel::bounded::<usize>(1);
+    dialog.connect_response(move |dialog, response| {
+        dialog.set_visible(false);
+        let index = match response {
+            gtk::ResponseType::Other(i) => usize::from(i),
+            _ => cancel,
+        };
+        let _ = tx.try_send(index);
+    });
+    dialog.present();
+    rx.recv().await.unwrap_or(cancel)
+}
+
 /// A yes/no question. Returns true when the confirm button was pressed.
 pub async fn confirm(
     widget: &impl IsA<gtk::Widget>,
@@ -284,25 +340,16 @@ pub async fn confirm(
     confirm_label: &str,
 ) -> bool {
     let cancel = tr("Cancel");
-    let dialog = gtk::AlertDialog::builder()
-        .message(message)
-        .detail(detail)
-        .buttons([cancel.as_str(), confirm_label])
-        .cancel_button(0)
-        .default_button(1)
-        .modal(true)
-        .build();
-    let parent = parent_window(widget);
-    matches!(dialog.choose_future(parent.as_ref()).await, Ok(1))
+    choose(widget, message, detail, &[&cancel, confirm_label], 0, 1).await == 1
 }
 
 pub fn show_error(widget: &impl IsA<gtk::Widget>, message: &str, detail: &str) {
-    let dialog = gtk::AlertDialog::builder()
-        .message(message)
-        .detail(detail)
-        .modal(true)
-        .build();
-    dialog.show(parent_window(widget).as_ref());
+    let widget = widget.clone().upcast::<gtk::Widget>();
+    let (message, detail) = (message.to_owned(), detail.to_owned());
+    glib::spawn_future_local(async move {
+        let close = tr("Close");
+        choose(&widget, &message, &detail, &[&close], 0, 0).await;
+    });
 }
 
 /// The text of a D-Bus or other GLib error without the remote error name.
@@ -329,15 +376,9 @@ pub async fn ask(
     confirm_label: &str,
 ) -> Option<Vec<String>> {
     let (tx, rx) = async_channel::bounded::<Option<Vec<String>>>(1);
-    let window = gtk::Window::builder()
-        .title(title)
-        .modal(true)
-        .resizable(false)
-        .default_width(380)
-        .build();
-    if let Some(parent) = parent_window(widget) {
-        window.set_transient_for(Some(&parent));
-    }
+    let window = popup_window(widget, title);
+    window.set_resizable(false);
+    window.set_default_width(380);
     let root = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(10)

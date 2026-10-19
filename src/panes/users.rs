@@ -243,20 +243,20 @@ impl Pane {
             "delete",
             Rc::new(|this, user, w| {
                 glib::spawn_future_local(async move {
-                    let dialog = gtk::AlertDialog::builder()
-                        .message(format!("{} {}?", tr("Delete"), user.display_name()))
-                        .detail(tr(
-                            "Their files can be kept in /home, or deleted with the account.",
-                        ))
-                        .buttons([tr("Cancel"), tr("Keep Files"), tr("Delete Files")])
-                        .cancel_button(0)
-                        .default_button(0)
-                        .modal(true)
-                        .build();
-                    let parent = widgets::parent_window(&w);
-                    let remove_files = match dialog.choose_future(parent.as_ref()).await {
-                        Ok(1) => false,
-                        Ok(2) => true,
+                    let (cancel, keep, delete) =
+                        (tr("Cancel"), tr("Keep Files"), tr("Delete Files"));
+                    let answer = widgets::choose(
+                        &w,
+                        &format!("{} {}?", tr("Delete"), user.display_name()),
+                        &tr("Their files can be kept in /home, or deleted with the account."),
+                        &[&cancel, &keep, &delete],
+                        0,
+                        0,
+                    )
+                    .await;
+                    let remove_files = match answer {
+                        1 => false,
+                        2 => true,
                         _ => return,
                     };
                     this.report(

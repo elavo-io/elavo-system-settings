@@ -68,15 +68,8 @@ impl Pane {
                 widgets::show_error(&button, &tr("The list of time zones is not available."), "");
                 return;
             }
-            let window = gtk::Window::builder()
-                .title(tr("Time Zone"))
-                .modal(true)
-                .default_width(380)
-                .default_height(480)
-                .build();
-            if let Some(parent) = widgets::parent_window(&button) {
-                window.set_transient_for(Some(&parent));
-            }
+            let window = widgets::popup_window(&button, &tr("Time Zone"));
+            window.set_default_size(380, 480);
             let search = gtk::SearchEntry::builder()
                 .placeholder_text(tr("Search for a city"))
                 .margin_top(12)

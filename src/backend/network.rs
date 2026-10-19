@@ -152,7 +152,10 @@ async fn device(conn: &gio::DBusConnection, path: &str) -> Device {
     }
 }
 
-async fn access_points(conn: &gio::DBusConnection, device: &str) -> Vec<AccessPoint> {
+/// One entry per network name. A dual-band or mesh router sends one name from
+/// several access points, so the entry is the one the device is joined to
+/// (`active`), and otherwise the strongest.
+async fn access_points(conn: &gio::DBusConnection, device: &str, active: &str) -> Vec<AccessPoint> {
     let Ok(reply) = dbus::call(conn, NM, device, WIRELESS, "GetAllAccessPoints", None).await else {
         return Vec::new();
     };
@@ -173,16 +176,21 @@ async fn access_points(conn: &gio::DBusConnection, device: &str) -> Vec<AccessPo
             ),
             ssid: ssid.clone(),
         };
-        match best.get(&ssid) {
-            Some(existing) if existing.strength >= ap.strength => {}
-            _ => {
-                best.insert(ssid, ap);
-            }
+        if !best
+            .get(&ssid)
+            .is_some_and(|existing| keeps(existing, &ap, active))
+        {
+            best.insert(ssid, ap);
         }
     }
     let mut list: Vec<AccessPoint> = best.into_values().collect();
     list.sort_by(|a, b| b.strength.cmp(&a.strength).then(a.ssid.cmp(&b.ssid)));
     list
+}
+
+/// Whether `existing` stays the entry for its name when `ap` has the same name.
+fn keeps(existing: &AccessPoint, ap: &AccessPoint, active: &str) -> bool {
+    existing.path == active || (ap.path != active && existing.strength >= ap.strength)
 }
 
 type ConnSettings = HashMap<String, HashMap<String, glib::Variant>>;
@@ -242,7 +250,7 @@ pub async fn overview(conn: &gio::DBusConnection) -> Overview {
     }
     let mut networks = Vec::new();
     if let Some(wifi) = devices.iter().find(|d| d.is_wifi()) {
-        networks = access_points(conn, &wifi.path).await;
+        networks = access_points(conn, &wifi.path, &wifi.active_ap).await;
     }
     Overview {
         running: true,
@@ -424,5 +432,20 @@ mod tests {
             Security::Psk
         );
         assert_eq!(security(1, SEC_KEY_MGMT_802_1X, 0), Security::Enterprise);
+    }
+
+    #[test]
+    fn joined_access_point_wins_its_name() {
+        let ap = |path: &str, strength| AccessPoint {
+            path: path.to_owned(),
+            ssid: "XD-1".to_owned(),
+            strength,
+            security: Security::Psk,
+        };
+        let (band_24, band_5) = (ap("/ap/24", 74), ap("/ap/5", 48));
+        assert!(keeps(&band_5, &band_24, "/ap/5"));
+        assert!(!keeps(&band_24, &band_5, "/ap/5"));
+        assert!(keeps(&band_24, &band_5, ""));
+        assert!(!keeps(&band_5, &band_24, ""));
     }
 }
