@@ -22,6 +22,7 @@ mod placeholders;
 mod power;
 mod sound;
 mod storage;
+mod switcher;
 mod updates;
 mod users;
 mod wallpaper;
@@ -150,6 +151,16 @@ pub fn all() -> Vec<Pane> {
             group: 3,
             parent: None,
             build: dock::build,
+        },
+        Pane {
+            id: "switcher",
+            title: || tr("App Switcher"),
+            icon: "preferences-desktop-keyboard-symbolic",
+            color: "blue",
+            keywords: &["alt", "tab", "switcher", "windows", "grave"],
+            group: 3,
+            parent: None,
+            build: switcher::build,
         },
         Pane {
             id: "displays",

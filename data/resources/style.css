@@ -5,8 +5,8 @@
   background-color: alpha(currentColor, 0.04);
 }
 
-.settings-sidebar searchentry {
-  margin: 10px 10px 6px;
+.settings-sidebar entry.search {
+  margin: 12px 10px 10px;
 }
 
 .settings-sidebar list {

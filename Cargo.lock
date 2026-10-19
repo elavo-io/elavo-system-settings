@@ -149,11 +149,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "elavo-switcher-settings"
+version = "0.1.0"
+dependencies = [
+ "gtk4",
+ "wayland-client",
+]
+
+[[package]]
 name = "elavo-system-settings"
 version = "0.1.0"
 dependencies = [
  "async-channel",
  "elavo-dock-settings",
+ "elavo-switcher-settings",
  "glib-build-tools",
  "gtk4",
  "libc",

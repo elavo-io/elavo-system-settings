@@ -307,6 +307,11 @@ fn describe(action: &roxmltree::Node) -> String {
             ("foot", "Open Terminal"),
             ("elavo-grim-region", "Screenshot of a region"),
             ("elavo-dock --activate", "Open dock item"),
+            ("elavo-switcher --window-next", "Next window of this application"),
+            ("elavo-switcher --window-previous", "Previous window of this application"),
+            ("elavo-switcher --previous", "Previous application"),
+            ("elavo-switcher --next", "Next application"),
+            ("elavo-switcher --scoped", "Open the app switcher"),
             ("elavo-system-settings", "Open System Settings"),
         ];
         for (prefix, label) in known {
@@ -513,6 +518,7 @@ mod tests {
             <keybind key="W-S-s"><action name="Execute" command="/usr/libexec/elavo-grim-region"/></keybind>
             <keybind key="A-F4"><action name="Close"/></keybind>
             <keybind key="W-2"><action name="Execute" command="elavo-dock --activate 2"/></keybind>
+            <keybind key="A-Tab"><action name="Execute" command="elavo-switcher --next"/></keybind>
         </keyboard></labwc_config>"#;
         let binds = keybinds(doc);
         assert_eq!(binds[0].key, "Super+Space");
@@ -523,6 +529,7 @@ mod tests {
         assert_eq!(binds[2].action, "Screenshot of a region");
         assert_eq!(binds[3].action, "Close");
         assert_eq!(binds[4].action, "Open dock item 2");
+        assert_eq!(binds[5].action, "Next application");
     }
 
     #[test]
