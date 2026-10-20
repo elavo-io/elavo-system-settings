@@ -68,4 +68,16 @@
     <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
     <annotate key="org.freedesktop.policykit.exec.argv1">lid</annotate>
   </action>
+
+  <action id="io.elavo.SystemSettings.login-window">
+    <description>Change what the login window shows</description>
+    <message>Authentication is required to change what the login window shows.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">login-window</annotate>
+  </action>
 </policyconfig>

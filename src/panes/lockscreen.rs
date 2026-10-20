@@ -1,15 +1,21 @@
 //! Lock Screen: how long the computer waits before locking and before
-//! turning the display off. Written to `idle.conf`; the idle service is
-//! restarted so the new times apply right away.
+//! turning the display off, and what the login window shows. The times are
+//! written to `idle.conf`, and the idle service is restarted so they apply
+//! right away. The login window is set for everyone through the helper.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
+use gtk::glib;
 use gtk::prelude::*;
 
 use crate::backend::keyfile::idle::{self, Idle};
-use crate::backend::power;
+use crate::backend::{greeter, helper, power};
 use crate::i18n::tr;
 use crate::widgets;
+
+/// The helper's `login-window` values, in dropdown order.
+const LOGIN_WINDOW: [&str; 2] = ["list", "name"];
 
 /// Seconds; 0 is never.
 const TIMES: [i64; 9] = [60, 120, 300, 600, 900, 1800, 3600, 7200, 0];
@@ -85,6 +91,52 @@ pub fn build() -> gtk::Widget {
     page.append(&widgets::caption(&tr(
         "The screen also locks before the computer goes to sleep. Your password unlocks it.",
     )));
+    page.append(&widgets::group(
+        Some(&tr("Login Window")),
+        &[widgets::row(
+            &tr("Login window shows"),
+            &login_window_dropdown(),
+        )],
+    ));
+    page.append(&widgets::caption(&tr(
+        "This applies to everyone who uses this computer.",
+    )));
     page.append(&status);
     page.upcast()
+}
+
+fn login_window_dropdown() -> gtk::DropDown {
+    let dd = gtk::DropDown::from_strings(&[&tr("List of users"), &tr("Name and password")]);
+    let current = greeter::login_window();
+    let selected = LOGIN_WINDOW.iter().position(|v| *v == current).unwrap_or(0) as u32;
+    dd.set_selected(selected);
+    let last = Rc::new(Cell::new(selected));
+    let reverting = Rc::new(Cell::new(false));
+    dd.connect_selected_notify(move |dd| {
+        if reverting.get() {
+            return;
+        }
+        let Some(value) = LOGIN_WINDOW.get(dd.selected() as usize) else {
+            return;
+        };
+        let dd = dd.clone();
+        let last = last.clone();
+        let reverting = reverting.clone();
+        glib::spawn_future_local(async move {
+            match helper::run(&["login-window", value], |_| {}).await {
+                Ok(()) => last.set(dd.selected()),
+                Err(e) => {
+                    reverting.set(true);
+                    dd.set_selected(last.get());
+                    reverting.set(false);
+                    widgets::show_error(
+                        &dd,
+                        &tr("Could not change what the login window shows."),
+                        &e,
+                    );
+                }
+            }
+        });
+    });
+    dd
 }

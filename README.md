@@ -62,13 +62,16 @@ polkit asks for a password where the service needs one.
 
 ### The helper
 
-Software updates and the lid setting need root. They go through
-`/usr/libexec/elavo-system-settings-helper`, run with `pkexec`. It accepts
-only these commands and nothing else:
+Software updates, the lid setting, and what the login window shows need
+root. They go through `/usr/libexec/elavo-system-settings-helper`, run with
+`pkexec`. It accepts only these commands and nothing else:
 
 ```text
-check | upgrade | rollback | switch stable|latest | lid suspend|lock|ignore|poweroff
+check | upgrade | rollback | switch stable|latest | lid suspend|lock|ignore|poweroff | login-window list|name
 ```
+
+`login-window` writes `/etc/elavo/greeter.conf`, which Folio's
+`elavo-greeter` reads when it starts.
 
 `io.elavo.SystemSettings.policy` has one polkit action per command.
 

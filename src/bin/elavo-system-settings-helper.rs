@@ -11,6 +11,7 @@
 //! elavo-system-settings-helper switch stable|latest
 //! elavo-system-settings-helper rollback
 //! elavo-system-settings-helper lid suspend|lock|ignore|poweroff
+//! elavo-system-settings-helper login-window list|name
 //! ```
 
 use std::io::{BufRead, BufReader, Write};
@@ -22,6 +23,8 @@ use std::thread;
 
 const LID_DROPIN_DIR: &str = "/etc/systemd/logind.conf.d";
 const LID_DROPIN: &str = "/etc/systemd/logind.conf.d/50-elavo-lid.conf";
+const GREETER_DIR: &str = "/etc/elavo";
+const GREETER_CONF: &str = "/etc/elavo/greeter.conf";
 
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
@@ -30,6 +33,23 @@ enum Command {
     Switch(Channel),
     Rollback,
     Lid(Lid),
+    LoginWindow(LoginWindow),
+}
+
+/// What Folio's login window shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoginWindow {
+    List,
+    Name,
+}
+
+impl LoginWindow {
+    fn value(self) -> &'static str {
+        match self {
+            LoginWindow::List => "list",
+            LoginWindow::Name => "name",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +98,8 @@ fn parse(args: &[String]) -> Result<Command, String> {
         ["lid", "lock"] => Ok(Command::Lid(Lid::Lock)),
         ["lid", "ignore"] => Ok(Command::Lid(Lid::Ignore)),
         ["lid", "poweroff"] => Ok(Command::Lid(Lid::Poweroff)),
+        ["login-window", "list"] => Ok(Command::LoginWindow(LoginWindow::List)),
+        ["login-window", "name"] => Ok(Command::LoginWindow(LoginWindow::Name)),
         _ => Err(format!("unsupported command: {}", args.join(" "))),
     }
 }
@@ -102,6 +124,13 @@ fn lid_dropin(lid: Lid) -> String {
     format!(
         "# Written by System Settings.\n[Login]\nHandleLidSwitch={0}\nHandleLidSwitchExternalPower={0}\n",
         lid.value()
+    )
+}
+
+fn greeter_conf(show: LoginWindow) -> String {
+    format!(
+        "# Written by System Settings.\n[Login]\nShow={}\n",
+        show.value()
     )
 }
 
@@ -276,6 +305,13 @@ fn execute(command: Command) -> Result<(), String> {
                 p
             })
         }
+        Command::LoginWindow(show) => {
+            // The greeter reads this each time it starts.
+            std::fs::create_dir_all(GREETER_DIR).map_err(|e| e.to_string())?;
+            let tmp = format!("{GREETER_CONF}.tmp");
+            std::fs::write(&tmp, greeter_conf(show)).map_err(|e| e.to_string())?;
+            std::fs::rename(&tmp, GREETER_CONF).map_err(|e| e.to_string())
+        }
     }
 }
 
@@ -292,7 +328,9 @@ fn main() -> ExitCode {
         eprintln!("elavo-system-settings-helper: must be run through pkexec");
         return ExitCode::from(2);
     }
-    if !Path::new("/run/ostree-booted").exists() && !matches!(command, Command::Lid(_)) {
+    if !Path::new("/run/ostree-booted").exists()
+        && !matches!(command, Command::Lid(_) | Command::LoginWindow(_))
+    {
         eprintln!(
             "elavo-system-settings-helper: this computer is not running an image-based system"
         );
@@ -328,6 +366,10 @@ mod tests {
             parse(&args(&["lid", "ignore"])),
             Ok(Command::Lid(Lid::Ignore))
         );
+        assert_eq!(
+            parse(&args(&["login-window", "name"])),
+            Ok(Command::LoginWindow(LoginWindow::Name))
+        );
     }
 
     #[test]
@@ -341,6 +383,9 @@ mod tests {
             &["switch", "stable", "extra"],
             &["lid", "hibernate"],
             &["lid", "suspend\nHandlePowerKey=ignore"],
+            &["login-window"],
+            &["login-window", "names"],
+            &["login-window", "list\nShow=name"],
             &["upgrade", "--apply"],
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
@@ -373,5 +418,13 @@ mod tests {
         assert!(text.contains("[Login]\n"));
         assert!(text.contains("HandleLidSwitch=lock\n"));
         assert!(text.contains("HandleLidSwitchExternalPower=lock\n"));
+    }
+
+    #[test]
+    fn greeter_conf_sets_show() {
+        let text = greeter_conf(LoginWindow::List);
+        assert!(text.contains("[Login]\nShow=list\n"));
+        let text = greeter_conf(LoginWindow::Name);
+        assert!(text.contains("[Login]\nShow=name\n"));
     }
 }
