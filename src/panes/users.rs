@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use gtk::prelude::*;
-use gtk::{gdk, gio, glib};
+use gtk::{gio, glib};
 
 use crate::backend::accounts::{self, User};
 use crate::i18n::tr;
@@ -18,22 +18,7 @@ struct Pane {
 }
 
 fn avatar(user: &User) -> gtk::Widget {
-    if !user.icon.is_empty() {
-        if let Ok(texture) = gdk::Texture::from_filename(&user.icon) {
-            let picture = gtk::Picture::for_paintable(&texture);
-            picture.set_size_request(48, 48);
-            picture.set_content_fit(gtk::ContentFit::Cover);
-            picture.add_css_class("user-avatar");
-            picture.set_overflow(gtk::Overflow::Hidden);
-            return picture.upcast();
-        }
-    }
-    gtk::Label::builder()
-        .label(user.initial())
-        .css_classes(["user-avatar"])
-        .valign(gtk::Align::Center)
-        .build()
-        .upcast()
+    crate::avatar::view(&user.initial(), &user.icon, crate::avatar::LIST)
 }
 
 impl Pane {

@@ -2,12 +2,15 @@
 //! left, the open pane on the right, and a header with Back, Forward, and
 //! the pane's name.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 
+use crate::avatar;
+use crate::backend::accounts;
+use crate::backend::dbus;
 use crate::backend::keyfile::state;
 use crate::i18n::tr;
 use crate::panes::{self, Pane};
@@ -62,11 +65,10 @@ fn user_card() -> gtk::Button {
         .next()
         .map(|c| c.to_uppercase().collect())
         .unwrap_or_default();
-    let avatar = gtk::Label::builder()
-        .label(initial)
-        .css_classes(["user-avatar", "small"])
-        .valign(gtk::Align::Center)
-        .build();
+    let icon = accounts::local_icon();
+    let slot = gtk::Box::builder().build();
+    slot.append(&avatar::view(&initial, &icon, avatar::SIDEBAR));
+    watch_sidebar_avatar(&slot, &initial, &icon);
     let labels = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .valign(gtk::Align::Center)
@@ -87,7 +89,7 @@ fn user_card() -> gtk::Button {
             .build(),
     );
     let content = gtk::Box::builder().spacing(10).build();
-    content.append(&avatar);
+    content.append(&slot);
     content.append(&labels);
     let button = gtk::Button::builder()
         .child(&content)
@@ -96,6 +98,63 @@ fn user_card() -> gtk::Button {
     button.set_action_name(Some("app.show-pane"));
     button.set_action_target_value(Some(&"users".to_variant()));
     button
+}
+
+/// Replace the sidebar picture when AccountsService reports a new one.
+/// The same path is kept when the file is overwritten, so a change reloads
+/// even though the path did not move.
+fn watch_sidebar_avatar(slot: &gtk::Box, letter: &str, icon: &str) {
+    let Some(conn) = accounts::bus() else {
+        return;
+    };
+    let slot = slot.clone();
+    let letter = letter.to_owned();
+    let shown = Rc::new(RefCell::new(icon.to_owned()));
+    let generation = Rc::new(Cell::new(0u32));
+    let debounce = dbus::Debounce::new(100);
+    let paint: Rc<dyn Fn(bool)> = {
+        let conn = conn.clone();
+        let slot = slot.clone();
+        Rc::new(move |force| {
+            let ticket = generation.get().wrapping_add(1);
+            generation.set(ticket);
+            let generation = Rc::clone(&generation);
+            let shown = Rc::clone(&shown);
+            let slot = slot.clone();
+            let letter = letter.clone();
+            let conn = conn.clone();
+            glib::spawn_future_local(async move {
+                let Some(user) = accounts::current(&conn).await else {
+                    return;
+                };
+                if generation.get() != ticket {
+                    return;
+                }
+                if !force && *shown.borrow() == user.icon {
+                    return;
+                }
+                shown.replace(user.icon.clone());
+                while let Some(child) = slot.first_child() {
+                    slot.remove(&child);
+                }
+                slot.append(&avatar::view(&letter, &user.icon, avatar::SIDEBAR));
+            });
+        })
+    };
+    paint(false);
+    let sub = dbus::on_signal(
+        &conn,
+        "org.freedesktop.Accounts",
+        None,
+        None,
+        move |_, name, _| {
+            if name == "Changed" {
+                let paint = Rc::clone(&paint);
+                debounce.run(move || paint(true));
+            }
+        },
+    );
+    widgets::keep_alive(&slot, sub);
 }
 
 fn search_text(pane: &Pane) -> String {

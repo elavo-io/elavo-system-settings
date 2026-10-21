@@ -170,6 +170,7 @@
   opacity: 0.6;
 }
 
+/* 48px matches avatar::LIST. .small is the sidebar, avatar::SIDEBAR. */
 .user-avatar {
   border-radius: 999px;
   min-width: 48px;

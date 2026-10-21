@@ -1,4 +1,5 @@
 mod app;
+mod avatar;
 mod backend;
 mod i18n;
 mod panes;

@@ -114,6 +114,35 @@ pub async fn list(conn: &gio::DBusConnection) -> Option<Vec<User>> {
     Some(users)
 }
 
+/// The logged-in account, when AccountsService answers.
+pub async fn current(conn: &gio::DBusConnection) -> Option<User> {
+    let reply = dbus::call(
+        conn,
+        ACCOUNTS,
+        ACCOUNTS_PATH,
+        ACCOUNTS,
+        "FindUserById",
+        Some((i64::from(unsafe { libc::getuid() }),).to_variant()),
+    )
+    .await
+    .ok()?;
+    user(conn, reply.child_value(0).str()?).await
+}
+
+/// AccountsService's picture for the logged-in user, when that file is
+/// already on disk. The sidebar shows it before the bus answers.
+pub fn local_icon() -> String {
+    let path = format!(
+        "/var/lib/AccountsService/icons/{}",
+        glib::user_name().to_string_lossy()
+    );
+    if std::path::Path::new(&path).is_file() {
+        path
+    } else {
+        String::new()
+    }
+}
+
 /// A login name: lowercase letters, digits, `-` and `_`, starting with a
 /// letter, at most 32 characters.
 pub fn valid_username(name: &str) -> bool {
