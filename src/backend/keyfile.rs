@@ -132,6 +132,23 @@ pub mod lens {
     }
 }
 
+/// `keyboard.conf`, read by `elavo-input`. Missing means on.
+pub mod keyboard {
+    pub const FILE: &str = "keyboard.conf";
+    pub const GROUP: &str = "Text";
+    pub const KEY: &str = "AddPeriodWithDoubleSpace";
+
+    pub fn enabled() -> bool {
+        super::load(FILE).boolean(GROUP, KEY).unwrap_or(true)
+    }
+
+    pub fn set_enabled(on: bool) -> std::io::Result<()> {
+        let file = super::load(FILE);
+        file.set_boolean(GROUP, KEY, on);
+        super::save(FILE, &file)
+    }
+}
+
 /// This application's own state: the last pane and the window size.
 pub mod state {
     pub const FILE: &str = "system-settings.conf";
@@ -188,6 +205,25 @@ mod tests {
         let file = glib::KeyFile::new();
         file.set_int64(idle::GROUP, "LockAfter", -5);
         assert_eq!(idle::parse(&file).lock_after, idle::DEFAULT_LOCK);
+    }
+
+    #[test]
+    fn period_defaults_on_and_round_trips() {
+        let file = glib::KeyFile::new();
+        assert!(file.boolean(keyboard::GROUP, keyboard::KEY).is_err());
+        file.set_boolean(keyboard::GROUP, keyboard::KEY, false);
+        let text = file.to_data();
+        assert!(text.contains("[Text]"));
+        assert!(text.contains("AddPeriodWithDoubleSpace=false"));
+        let back = glib::KeyFile::new();
+        back.load_from_data(&text, glib::KeyFileFlags::NONE)
+            .unwrap();
+        assert_eq!(
+            back.boolean(keyboard::GROUP, keyboard::KEY).ok(),
+            Some(false)
+        );
+        back.set_boolean(keyboard::GROUP, keyboard::KEY, true);
+        assert!(back.to_data().contains("AddPeriodWithDoubleSpace=true"));
     }
 
     #[test]

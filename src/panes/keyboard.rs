@@ -1,12 +1,14 @@
-//! Keyboard: key repeat, the layout, and the shortcut list. Repeat goes in
-//! the user `rc.xml`, the layout in the user labwc `environment`; labwc
-//! reloads both on SIGHUP.
+//! Keyboard: double-space period, key repeat, the layout, and the shortcut
+//! list. Repeat goes in the user `rc.xml`, the layout in the user labwc
+//! `environment`; labwc reloads both on SIGHUP. The period switch is
+//! `keyboard.conf`, which `elavo-input` reads.
 
 use std::rc::Rc;
 
 use gtk::glib;
 use gtk::prelude::*;
 
+use crate::backend::keyfile;
 use crate::backend::labwc::{self, seg};
 use crate::i18n::tr;
 use crate::widgets;
@@ -27,6 +29,25 @@ fn read(path: &[labwc::Seg], default: f64) -> f64 {
 pub fn build() -> gtk::Widget {
     let page = widgets::page();
     let status = widgets::status_label();
+
+    let (period_row, period) = widgets::switch_row(
+        &tr("Add period with double-space"),
+        Some(&tr(
+            "Two quick spaces at the end of a word become a period.",
+        )),
+    );
+    period.set_active(keyfile::keyboard::enabled());
+    let period_status = status.clone();
+    period.connect_state_set(move |_, on| {
+        match keyfile::keyboard::set_enabled(on) {
+            Ok(()) => widgets::set_status(&period_status, ""),
+            Err(e) => {
+                widgets::set_status(&period_status, &format!("{} {e}", tr("Could not save:")))
+            }
+        }
+        glib::Propagation::Proceed
+    });
+    page.append(&widgets::group(Some(&tr("Text")), &[period_row]));
 
     let rate = widgets::slider(5.0, 60.0, 1.0);
     rate.set_value(read(RATE, DEFAULT_RATE));
