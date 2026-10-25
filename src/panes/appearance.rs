@@ -132,9 +132,6 @@ pub fn build() -> gtk::Widget {
         .margin_bottom(6)
         .build();
     scheme_box.append(&cards);
-    scheme_box.append(&widgets::caption(&tr(
-        "The dark Elavo theme is not finished yet. Apps built with libadwaita turn dark now; the others stay light until it ships.",
-    )));
     page.append(&widgets::group(
         Some(&tr("Appearance")),
         &[widgets::plain_row(&scheme_box)],

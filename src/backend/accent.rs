@@ -258,6 +258,15 @@ fn interface_contrast() -> Option<i32> {
         .ok()
 }
 
+/// `gtk.css` and `gtk-dark.css` sit beside each other. GTK loads the dark
+/// sheet instead of the light one when the color scheme is dark.
+fn dark_import(import_url: &str) -> String {
+    match import_url.rsplit_once("gtk.css") {
+        Some((head, tail)) => format!("{head}gtk-dark.css{tail}"),
+        None => import_url.to_string(),
+    }
+}
+
 /// GTK4 sheet: import Elavo, then publish the accent the user stylesheet
 /// points at. The stylesheet outranks this file, so the color cannot be
 /// assigned to `--accent-bg-color` here.
@@ -300,8 +309,16 @@ fn write_user_theme(preset: Preset) -> std::io::Result<()> {
         &user_theme_gtk4(preset, &gtk4),
     )?;
     super::keyfile::write_atomic(
+        &root.join("gtk-4.0/gtk-dark.css"),
+        &user_theme_gtk4(preset, &dark_import(&gtk4)),
+    )?;
+    super::keyfile::write_atomic(
         &root.join("gtk-3.0/gtk.css"),
         &user_theme_gtk3(preset, &gtk3),
+    )?;
+    super::keyfile::write_atomic(
+        &root.join("gtk-3.0/gtk-dark.css"),
+        &user_theme_gtk3(preset, &dark_import(&gtk3)),
     )?;
     super::keyfile::write_atomic(&root.join("index.theme"), INDEX_THEME)
 }
@@ -449,6 +466,9 @@ mod tests {
         assert!(gtk4.contains("--elavo-user-accent-fg: var(--elavo-accent-pink-fg);"));
         assert!(!gtk4.contains("--accent-bg-color"));
         assert!(!gtk4.contains(pink.bg));
+        let gtk4_dark = user_theme_gtk4(*pink, &dark_import("../../Elavo/gtk-4.0/gtk.css"));
+        assert!(gtk4_dark.starts_with("@import url(\"../../Elavo/gtk-4.0/gtk-dark.css\");\n"));
+        assert!(gtk4_dark.contains("--elavo-user-accent: var(--elavo-accent-pink);"));
         let gtk3 = user_theme_gtk3(*pink, "../Elavo/gtk-3.0/gtk.css");
         assert!(gtk3.contains("@define-color theme_selected_bg_color #d6337f;"));
         assert!(gtk3.contains("@define-color accent_color #d6337f;"));
