@@ -152,15 +152,15 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 [[package]]
 name = "elavo-dock-settings"
 version = "0.1.0"
-source = "git+https://github.com/elavo-io/elavo-folio?tag=v0.2.6.3#5636a90b8fd55fe91701cbd791da0da9c14cf2f7"
+source = "git+https://github.com/elavo-io/elavo-folio?tag=v0.3.2.0#5044e183d5f65e59cb069be1f266d012935ba097"
 dependencies = [
  "gtk4",
 ]
 
 [[package]]
 name = "elavo-switcher-settings"
-version = "0.1.0"
-source = "git+https://github.com/elavo-io/elavo-folio?tag=v0.2.6.3#5636a90b8fd55fe91701cbd791da0da9c14cf2f7"
+version = "0.1.1"
+source = "git+https://github.com/elavo-io/elavo-folio?tag=v0.3.2.0#5044e183d5f65e59cb069be1f266d012935ba097"
 dependencies = [
  "gtk4",
  "wayland-client",
