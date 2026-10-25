@@ -66,11 +66,18 @@ glib::wrapper! {
 
 impl Avatar {
     fn new(size: i32, texture: gdk::Texture) -> Self {
+        let avatar = Self::empty(size);
+        avatar.set_texture(Some(texture));
+        avatar
+    }
+
+    /// A circle with nothing in it yet. Its CSS background shows until
+    /// `set_texture` gives it a picture.
+    pub fn empty(size: i32) -> Self {
         let avatar: Self = glib::Object::builder()
             .property("accessible-role", gtk::AccessibleRole::Img)
             .build();
         avatar.imp().size.set(size);
-        avatar.imp().texture.replace(Some(texture));
         avatar.set_size_request(size, size);
         avatar.set_halign(gtk::Align::Center);
         avatar.set_valign(gtk::Align::Center);
@@ -78,6 +85,11 @@ impl Avatar {
         avatar.set_vexpand(false);
         avatar.set_overflow(gtk::Overflow::Hidden);
         avatar
+    }
+
+    pub fn set_texture(&self, texture: Option<gdk::Texture>) {
+        self.imp().texture.replace(texture);
+        self.queue_draw();
     }
 }
 

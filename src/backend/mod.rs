@@ -14,6 +14,7 @@ pub mod keyfile;
 pub mod labwc;
 pub mod network;
 pub mod outputs;
+pub mod picture;
 pub mod power;
 pub mod process;
 pub mod pulse;

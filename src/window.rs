@@ -687,23 +687,19 @@ fn watch_text(window: &gtk::ApplicationWindow, text: &gtk::Text) {
     let key = text.as_ptr() as usize;
     let fresh = UNDO.with(|map| {
         let mut map = map.borrow_mut();
-        if map.contains_key(&key) {
-            false
-        } else {
-            map.insert(
-                key,
-                FieldUndo {
-                    undo: Cell::new(0),
-                    redo: Cell::new(0),
-                    last: Cell::new(LastEdit::None),
-                    pending: Cell::new(0),
-                    applied: Cell::new(false),
-                    same_turn: Cell::new(false),
-                    prev: RefCell::new(text.text().to_string()),
-                },
-            );
-            true
-        }
+        let std::collections::hash_map::Entry::Vacant(slot) = map.entry(key) else {
+            return false;
+        };
+        slot.insert(FieldUndo {
+            undo: Cell::new(0),
+            redo: Cell::new(0),
+            last: Cell::new(LastEdit::None),
+            pending: Cell::new(0),
+            applied: Cell::new(false),
+            same_turn: Cell::new(false),
+            prev: RefCell::new(text.text().to_string()),
+        });
+        true
     });
     if !fresh {
         return;
@@ -856,10 +852,7 @@ fn text_focus(window: &gtk::ApplicationWindow) -> Option<gtk::Widget> {
         {
             return Some(widget);
         }
-        match widget.parent() {
-            Some(parent) => widget = parent,
-            None => return None,
-        }
+        widget = widget.parent()?;
     }
 }
 

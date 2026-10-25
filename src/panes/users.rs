@@ -188,28 +188,9 @@ impl Pane {
         add(
             "picture",
             Rc::new(|this, user, w| {
-                glib::spawn_future_local(async move {
-                    let filter = gtk::FileFilter::new();
-                    filter.set_name(Some(&tr("Images")));
-                    filter.add_pixbuf_formats();
-                    let filters = gio::ListStore::new::<gtk::FileFilter>();
-                    filters.append(&filter);
-                    let dialog = gtk::FileDialog::builder()
-                        .title(tr("Choose a Picture"))
-                        .filters(&filters)
-                        .modal(true)
-                        .build();
-                    let parent = widgets::parent_window(&w);
-                    let Ok(file) = dialog.open_future(parent.as_ref()).await else {
-                        return;
-                    };
-                    let Some(path) = file.path() else {
-                        return;
-                    };
-                    this.report(
-                        &w,
-                        accounts::set_icon(&this.conn, &user.path, &path.to_string_lossy()).await,
-                    );
+                let this = this.clone();
+                super::picture::open(&w, this.conn.clone(), user, move |widget, result| {
+                    this.report(widget, result);
                 });
             }),
         );

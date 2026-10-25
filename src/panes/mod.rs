@@ -18,6 +18,7 @@ mod lens;
 mod lockscreen;
 mod mouse;
 mod network;
+mod picture;
 mod placeholders;
 mod power;
 mod sound;
