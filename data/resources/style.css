@@ -152,8 +152,12 @@
 
 .wallpaper-thumb {
   border-radius: 6px;
-  min-width: 168px;
-  min-height: 94px;
+  min-width: 128px;
+  min-height: 72px;
+}
+
+.wallpaper-strip {
+  background: transparent;
 }
 
 .display-canvas {

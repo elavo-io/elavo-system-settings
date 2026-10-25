@@ -1,11 +1,14 @@
-//! Wallpaper: the dynamic pictures shipped with Elavo, and a picture the
-//! person chooses. The picture always covers the screen. Automatic follows
-//! the light or dark appearance.
+//! Wallpaper: dynamic pictures in one horizontal row, landscape pictures
+//! in another, and a picture the person chooses. The picture always covers
+//! the screen. Automatic follows the light or dark appearance, and only a
+//! dynamic picture switches.
 
 use std::cell::{Cell, RefCell};
+use std::path::Path;
 use std::rc::Rc;
 
 use gtk::prelude::*;
+use gtk::{gdk, glib, graphene, gsk};
 
 use crate::backend::accent;
 use crate::backend::wallpaper::{self, Dynamic, Kind, Variant};
@@ -13,6 +16,8 @@ use crate::i18n::tr;
 use crate::widgets;
 
 const VARIANTS: [Variant; 3] = [Variant::Automatic, Variant::Light, Variant::Dark];
+const THUMB_W: i32 = 128;
+const THUMB_H: i32 = 72;
 
 fn variant_label(variant: Variant) -> String {
     match variant {
@@ -26,32 +31,174 @@ fn scheme_dark() -> bool {
     accent::scheme() == accent::Scheme::Dark
 }
 
-fn picture_file(path: &std::path::Path) -> gtk::Picture {
-    let picture = gtk::Picture::for_filename(path);
-    picture.set_content_fit(gtk::ContentFit::Cover);
-    picture.set_can_shrink(true);
-    picture.set_overflow(gtk::Overflow::Hidden);
-    picture.set_size_request(168, 94);
-    picture.add_css_class("wallpaper-thumb");
-    picture
+/// A thumbnail that stays `THUMB_W` by `THUMB_H`. `GtkPicture` would report
+/// the file's pixel size and stretch the row.
+mod thumb {
+    use gtk::subclass::prelude::*;
+
+    use super::*;
+
+    mod imp {
+        use gtk::subclass::prelude::*;
+
+        use super::*;
+
+        #[derive(Default)]
+        pub struct Thumb {
+            pub texture: RefCell<Option<gdk::Texture>>,
+        }
+
+        #[glib::object_subclass]
+        impl ObjectSubclass for Thumb {
+            const NAME: &'static str = "ElavoWallpaperThumb";
+            type Type = super::Thumb;
+            type ParentType = gtk::Widget;
+        }
+
+        impl ObjectImpl for Thumb {}
+
+        impl WidgetImpl for Thumb {
+            fn measure(
+                &self,
+                orientation: gtk::Orientation,
+                _for_size: i32,
+            ) -> (i32, i32, i32, i32) {
+                let size = if orientation == gtk::Orientation::Horizontal {
+                    THUMB_W
+                } else {
+                    THUMB_H
+                };
+                (size, size, -1, -1)
+            }
+
+            fn snapshot(&self, snapshot: &gtk::Snapshot) {
+                let Some(texture) = self.texture.borrow().clone() else {
+                    return;
+                };
+                let widget = self.obj();
+                let (w, h) = (widget.width() as f32, widget.height() as f32);
+                if w <= 0.0 || h <= 0.0 || texture.width() <= 0 || texture.height() <= 0 {
+                    return;
+                }
+                let bounds = graphene::Rect::new(0.0, 0.0, w, h);
+                snapshot.push_rounded_clip(&gsk::RoundedRect::from_rect(bounds, 6.0));
+                let (x, y, cw, ch) = cover(texture.width() as f32, texture.height() as f32, w, h);
+                snapshot.append_texture(&texture, &graphene::Rect::new(x, y, cw, ch));
+                snapshot.pop();
+            }
+        }
+    }
+
+    glib::wrapper! {
+        pub struct Thumb(ObjectSubclass<imp::Thumb>)
+            @extends gtk::Widget,
+            @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
+    }
+
+    impl Thumb {
+        pub fn new(path: Option<&Path>) -> Self {
+            let thumb: Self = glib::Object::builder()
+                .property("accessible-role", gtk::AccessibleRole::Img)
+                .build();
+            thumb.set_size_request(THUMB_W, THUMB_H);
+            thumb.set_halign(gtk::Align::Center);
+            thumb.set_valign(gtk::Align::Center);
+            thumb.set_hexpand(false);
+            thumb.set_vexpand(false);
+            thumb.set_overflow(gtk::Overflow::Hidden);
+            thumb.add_css_class("wallpaper-thumb");
+            if let Some(path) = path {
+                thumb.set_file(path);
+            }
+            thumb
+        }
+
+        pub fn set_file(&self, path: &Path) {
+            let texture = gdk::Texture::from_filename(path).ok();
+            self.imp().texture.replace(texture);
+            self.queue_draw();
+        }
+    }
 }
 
-fn card(label: &str, picture: &gtk::Picture) -> gtk::ToggleButton {
+/// Where `texture` sits so it covers `width` by `height`, centered.
+fn cover(texture_w: f32, texture_h: f32, width: f32, height: f32) -> (f32, f32, f32, f32) {
+    let scale = (width / texture_w).max(height / texture_h);
+    let (cw, ch) = (texture_w * scale, texture_h * scale);
+    ((width - cw) / 2.0, (height - ch) / 2.0, cw, ch)
+}
+
+fn style_caption(label: &gtk::Label) {
+    label.set_xalign(0.5);
+    label.set_justify(gtk::Justification::Center);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    label.set_max_width_chars(14);
+    label.set_width_request(THUMB_W);
+}
+
+fn card(label: &str, picture: &thumb::Thumb) -> gtk::ToggleButton {
+    let caption = gtk::Label::new(Some(label));
+    card_with_label(picture, &caption)
+}
+
+fn card_with_label(picture: &thumb::Thumb, label: &gtk::Label) -> gtk::ToggleButton {
+    style_caption(label);
     let content = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(6)
+        .halign(gtk::Align::Center)
         .build();
     content.append(picture);
-    content.append(&gtk::Label::new(Some(label)));
+    content.append(label);
     gtk::ToggleButton::builder()
         .child(&content)
         .css_classes(["wallpaper-card"])
+        .hexpand(false)
+        .vexpand(false)
         .build()
+}
+
+/// A single row that scrolls sideways. The pane is itself in a vertical
+/// scroller, and a wrapping grid was stacking these pictures one per line.
+fn gallery(buttons: &[gtk::ToggleButton]) -> gtk::ScrolledWindow {
+    let row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(2)
+        .margin_bottom(2)
+        .margin_start(2)
+        .margin_end(2)
+        .halign(gtk::Align::Start)
+        .build();
+    for button in buttons {
+        row.append(button);
+    }
+    let scroll = gtk::ScrolledWindow::builder()
+        .child(&row)
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .propagate_natural_width(false)
+        .hexpand(true)
+        .css_classes(["wallpaper-strip"])
+        .build();
+    scroll.set_has_frame(false);
+    scroll.set_overlay_scrolling(true);
+    scroll
+}
+
+fn join_group(leader: &mut Option<gtk::ToggleButton>, button: &gtk::ToggleButton) {
+    if let Some(leader) = leader {
+        button.set_group(Some(leader));
+    } else {
+        *leader = Some(button.clone());
+    }
 }
 
 struct Shown {
     id: String,
-    picture: gtk::Picture,
+    kind: Kind,
+    picture: thumb::Thumb,
     paper: Option<Dynamic>,
     button: gtk::ToggleButton,
 }
@@ -60,9 +207,11 @@ pub fn build() -> gtk::Widget {
     let page = widgets::page();
     let status = widgets::status_label();
     let installed = wallpaper::catalog();
+    let landscapes = wallpaper::landscapes();
     let choice = Rc::new(RefCell::new(wallpaper::resolve_id(
         &wallpaper::load(),
         &installed,
+        &landscapes,
     )));
     let suppress = Rc::new(Cell::new(true));
     let shown: Rc<RefCell<Vec<Shown>>> = Rc::new(RefCell::new(Vec::new()));
@@ -77,51 +226,54 @@ pub fn build() -> gtk::Widget {
         .unwrap_or(0);
     variant.set_selected(pos as u32);
 
-    let flow = gtk::FlowBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .column_spacing(12)
-        .row_spacing(12)
-        .homogeneous(true)
-        .max_children_per_line(4)
-        .build();
-
     let mut leader: Option<gtk::ToggleButton> = None;
+    let mut dynamic_buttons: Vec<gtk::ToggleButton> = Vec::new();
     let dark = scheme_dark();
     let selected_variant = choice.borrow().variant;
     for paper in &installed {
         let Some(path) = wallpaper::thumb(paper, selected_variant, dark) else {
             continue;
         };
-        let picture = picture_file(&path);
+        let picture = thumb::Thumb::new(Some(&path));
         let button = card(&wallpaper::display_name(&paper.id), &picture);
-        if let Some(leader) = &leader {
-            button.set_group(Some(leader));
-        } else {
-            leader = Some(button.clone());
-        }
-        flow.append(&button);
+        join_group(&mut leader, &button);
+        dynamic_buttons.push(button.clone());
         shown.borrow_mut().push(Shown {
             id: paper.id.clone(),
+            kind: Kind::Dynamic,
             picture,
             paper: Some(paper.clone()),
             button,
         });
     }
+    let dynamic_gallery = gallery(&dynamic_buttons);
 
-    let custom_picture = gtk::Picture::new();
-    custom_picture.set_content_fit(gtk::ContentFit::Cover);
-    custom_picture.set_can_shrink(true);
-    custom_picture.set_overflow(gtk::Overflow::Hidden);
-    custom_picture.set_size_request(168, 94);
-    custom_picture.add_css_class("wallpaper-thumb");
+    let mut landscape_buttons: Vec<gtk::ToggleButton> = Vec::new();
+    for paper in &landscapes {
+        let picture = thumb::Thumb::new(Some(&paper.path));
+        let button = card(&wallpaper::landscape_title(&paper.id), &picture);
+        if let Some(credit) = wallpaper::landscape_credit(&paper.id) {
+            button.set_tooltip_text(Some(&credit));
+        }
+        join_group(&mut leader, &button);
+        landscape_buttons.push(button.clone());
+        shown.borrow_mut().push(Shown {
+            id: paper.id.clone(),
+            kind: Kind::Landscape,
+            picture,
+            paper: None,
+            button,
+        });
+    }
+    let landscape_gallery = gallery(&landscape_buttons);
+
+    let custom_picture = thumb::Thumb::new(None);
     let custom_name = gtk::Label::new(Some(&tr("Your picture")));
     let custom_button = card_with_label(&custom_picture, &custom_name);
-    if let Some(leader) = &leader {
-        custom_button.set_group(Some(leader));
-    }
+    join_group(&mut leader, &custom_button);
     let custom_path = choice.borrow().custom.clone();
     if let Some(name) = file_name(&custom_path) {
-        custom_picture.set_filename(Some(&custom_path));
+        custom_picture.set_file(Path::new(&custom_path));
         custom_name.set_label(&name);
         custom_button.set_visible(true);
     } else {
@@ -143,7 +295,7 @@ pub fn build() -> gtk::Widget {
             for item in shown.borrow().iter() {
                 if let Some(paper) = &item.paper {
                     if let Some(path) = wallpaper::thumb(paper, variant, dark) {
-                        item.picture.set_filename(Some(path));
+                        item.picture.set_file(&path);
                     }
                 }
             }
@@ -162,13 +314,15 @@ pub fn build() -> gtk::Widget {
             }
             let mut next = choice.borrow().clone();
             next.variant = VARIANTS[variant.selected() as usize % VARIANTS.len()];
-            if next.kind == Kind::Dynamic {
-                if let Some(item) = shown
-                    .borrow()
-                    .iter()
-                    .find(|item| item.button.is_active() && item.paper.is_some())
-                {
-                    next.id = item.id.clone();
+            let active = shown
+                .borrow()
+                .iter()
+                .find(|item| item.button.is_active())
+                .map(|item| (item.kind, item.id.clone()));
+            if next.kind != Kind::Custom {
+                if let Some((kind, id)) = active {
+                    next.kind = kind;
+                    next.id = id;
                 }
             }
             *choice.borrow_mut() = next.clone();
@@ -189,17 +343,20 @@ pub fn build() -> gtk::Widget {
             }
         });
     }
-    let dynamic_buttons: Vec<_> = shown
+    let catalog_buttons: Vec<_> = shown
         .borrow()
         .iter()
-        .map(|item| item.button.clone())
+        .map(|item| (item.kind, item.id.clone(), item.button.clone()))
         .collect();
-    for button in dynamic_buttons {
+    for (kind, id, button) in catalog_buttons {
         let persist = persist.clone();
         let choice = choice.clone();
         button.connect_toggled(move |button| {
             if button.is_active() {
-                choice.borrow_mut().kind = Kind::Dynamic;
+                let mut current = choice.borrow().clone();
+                current.kind = kind;
+                current.id = id.clone();
+                *choice.borrow_mut() = current;
                 persist();
             }
         });
@@ -265,7 +422,7 @@ pub fn build() -> gtk::Widget {
                     if path_str.contains('\n') {
                         return;
                     }
-                    custom_picture.set_filename(Some(&path));
+                    custom_picture.set_file(&path);
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                         custom_name.set_label(name);
                     }
@@ -290,11 +447,21 @@ pub fn build() -> gtk::Widget {
     };
     match kind {
         Kind::Custom if custom_button.is_visible() => custom_button.set_active(true),
-        _ => {
+        Kind::Landscape => {
             let button = shown
                 .borrow()
                 .iter()
-                .find(|item| item.id == id)
+                .find(|item| item.kind == Kind::Landscape && item.id == id)
+                .map(|item| item.button.clone());
+            if let Some(button) = button {
+                button.set_active(true);
+            }
+        }
+        Kind::Dynamic | Kind::Custom => {
+            let button = shown
+                .borrow()
+                .iter()
+                .find(|item| item.kind == Kind::Dynamic && item.id == id)
                 .map(|item| item.button.clone());
             if let Some(button) = button {
                 button.set_active(true);
@@ -303,24 +470,30 @@ pub fn build() -> gtk::Widget {
     }
     suppress.set(false);
 
-    if installed.is_empty() {
+    if installed.is_empty() && landscapes.is_empty() {
         page.append(&widgets::caption(&tr(
             "No dynamic wallpapers are installed.",
         )));
-    } else {
+    } else if !installed.is_empty() {
+        page.append(&widgets::heading(&tr("Dynamic wallpapers")));
+        page.append(&dynamic_gallery);
         page.append(&widgets::group(
-            Some(&tr("Dynamic wallpaper")),
-            &[
-                widgets::plain_row(&flow),
-                widgets::row_with_subtitle(
-                    &tr("Appearance"),
-                    Some(&tr(
-                        "Automatic uses the light or dark picture that matches Appearance.",
-                    )),
-                    &variant,
-                ),
-            ],
+            None,
+            &[widgets::row_with_subtitle(
+                &tr("Appearance"),
+                Some(&tr(
+                    "Automatic uses the light or dark picture that matches Appearance.",
+                )),
+                &variant,
+            )],
         ));
+    }
+    if !landscapes.is_empty() {
+        page.append(&widgets::heading(&tr("Landscape")));
+        page.append(&landscape_gallery);
+        page.append(&widgets::caption(&tr(
+            "A landscape picture stays as it is. It does not switch with Appearance.",
+        )));
     }
     page.append(&widgets::group(
         Some(&tr("Your pictures")),
@@ -333,25 +506,34 @@ pub fn build() -> gtk::Widget {
     page.upcast()
 }
 
-fn card_with_label(picture: &gtk::Picture, label: &gtk::Label) -> gtk::ToggleButton {
-    let content = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(6)
-        .build();
-    content.append(picture);
-    content.append(label);
-    gtk::ToggleButton::builder()
-        .child(&content)
-        .css_classes(["wallpaper-card"])
-        .build()
-}
-
 fn file_name(path: &str) -> Option<String> {
-    if path.is_empty() || !std::path::Path::new(path).is_file() {
+    if path.is_empty() || !Path::new(path).is_file() {
         return None;
     }
-    std::path::Path::new(path)
+    Path::new(path)
         .file_name()
         .and_then(|name| name.to_str())
         .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wide_picture_is_cropped_on_the_sides() {
+        let (x, y, w, h) = cover(200.0, 100.0, 128.0, 72.0);
+        assert!((y - 0.0).abs() < 0.05);
+        assert!((h - 72.0).abs() < 0.05);
+        assert!(w > 128.0);
+        assert!(x < 0.0);
+    }
+
+    #[test]
+    fn tall_picture_fills_the_width() {
+        let (x, _y, w, h) = cover(100.0, 200.0, 128.0, 72.0);
+        assert!((x - 0.0).abs() < 0.05);
+        assert!((w - 128.0).abs() < 0.05);
+        assert!(h > 72.0);
+    }
 }

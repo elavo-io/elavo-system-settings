@@ -185,7 +185,7 @@ pub fn all() -> Vec<Pane> {
             title: || tr("Wallpaper"),
             icon: "preferences-desktop-wallpaper-symbolic",
             color: "teal",
-            keywords: &["background", "desktop picture", "dynamic"],
+            keywords: &["background", "desktop picture", "dynamic", "landscape"],
             group: 3,
             parent: None,
             build: wallpaper::build,

@@ -1,7 +1,8 @@
 //! Desktop pictures. Dynamic wallpapers are directories of a light and a
-//! dark image. A picture the person chose is a single file. The choice is
-//! `~/.config/elavo/wallpaper.conf`, and `elavo-wallpaper.service` paints it
-//! with swaybg, always scaled to cover the screen.
+//! dark image. Landscape pictures are single files in a `landscape`
+//! directory. A picture the person chose is a single file too. The choice
+//! is `~/.config/elavo/wallpaper.conf`, and `elavo-wallpaper.service`
+//! paints it with swaybg, always scaled to cover the screen.
 
 use std::path::{Path, PathBuf};
 
@@ -16,6 +17,7 @@ const ROLES: &[&str] = &["jpg", "jpeg", "png", "webp"];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Dynamic,
+    Landscape,
     Custom,
 }
 
@@ -54,8 +56,20 @@ pub struct Dynamic {
     pub dark_thumb: Option<PathBuf>,
 }
 
+/// One landscape picture. `id` is the file stem, `beach-nenad-radojcic`:
+/// the place, then the photographer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Landscape {
+    pub id: String,
+    pub path: PathBuf,
+}
+
 pub fn display_name(id: &str) -> String {
     let id = id.strip_prefix("dynamic-").unwrap_or(id);
+    title_case(id)
+}
+
+fn title_case(id: &str) -> String {
     id.split('-')
         .filter(|part| !part.is_empty())
         .map(|part| {
@@ -67,6 +81,24 @@ pub fn display_name(id: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// The name under a landscape thumbnail. `beach-nenad-radojcic` is "Beach".
+pub fn landscape_title(id: &str) -> String {
+    let name = id.split('-').find(|part| !part.is_empty()).unwrap_or(id);
+    title_case(name)
+}
+
+/// The photographer credit, from the rest of the file stem.
+pub fn landscape_credit(id: &str) -> Option<String> {
+    let mut parts = id.split('-').filter(|part| !part.is_empty());
+    parts.next()?;
+    let credit = parts.collect::<Vec<_>>().join("-");
+    if credit.is_empty() {
+        None
+    } else {
+        Some(title_case(&credit))
+    }
 }
 
 pub fn roots() -> Vec<PathBuf> {
@@ -133,6 +165,85 @@ fn visit(dir: &Path, found: &mut Vec<Dynamic>) {
 
 pub fn catalog() -> Vec<Dynamic> {
     scan(&roots())
+}
+
+/// Landscape pictures are image files in a directory named `landscape`.
+/// The first root that has an id wins, same as a dynamic wallpaper. A
+/// dynamic directory is not searched, and `source` is skipped.
+pub fn scan_landscapes(roots: &[PathBuf]) -> Vec<Landscape> {
+    let mut found: Vec<Landscape> = Vec::new();
+    for root in roots {
+        if root.is_dir() {
+            walk_landscapes(root, &mut found);
+        }
+    }
+    found.sort_by(|a, b| a.id.cmp(&b.id));
+    found
+}
+
+pub fn landscapes() -> Vec<Landscape> {
+    scan_landscapes(&roots())
+}
+
+fn walk_landscapes(dir: &Path, found: &mut Vec<Landscape>) {
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if name.starts_with('.') || name == "source" {
+        return;
+    }
+    if name == "landscape" {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut files: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file() && is_picture(path))
+            .collect();
+        files.sort();
+        for path in files {
+            let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            if id.is_empty() || found.iter().any(|item| item.id == id) {
+                continue;
+            }
+            found.push(Landscape {
+                id: id.to_owned(),
+                path,
+            });
+        }
+        return;
+    }
+    if role(dir, "light").is_some() || role(dir, "dark").is_some() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut children: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    children.sort();
+    for child in children {
+        walk_landscapes(&child, found);
+    }
+}
+
+fn is_picture(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if name.starts_with('.') || name.contains("source") {
+        return false;
+    }
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ROLES.contains(&ext))
 }
 
 fn role(dir: &Path, name: &str) -> Option<PathBuf> {
@@ -221,11 +332,11 @@ pub fn parse(text: &str) -> Choice {
         let value = value.trim();
         match key.trim() {
             "Kind" => {
-                choice.kind = if value == "custom" {
-                    Kind::Custom
-                } else {
-                    Kind::Dynamic
-                }
+                choice.kind = match value {
+                    "custom" => Kind::Custom,
+                    "landscape" => Kind::Landscape,
+                    _ => Kind::Dynamic,
+                };
             }
             "Id" => choice.id = value.to_owned(),
             "Custom" => choice.custom = value.to_owned(),
@@ -245,6 +356,7 @@ pub fn parse(text: &str) -> Choice {
 pub fn format(choice: &Choice) -> String {
     let kind = match choice.kind {
         Kind::Dynamic => "dynamic",
+        Kind::Landscape => "landscape",
         Kind::Custom => "custom",
     };
     let variant = match choice.variant {
@@ -264,9 +376,18 @@ pub fn load() -> Choice {
         .unwrap_or_default()
 }
 
-/// An empty dynamic id means the first installed wallpaper.
-pub fn resolve_id(choice: &Choice, installed: &[Dynamic]) -> Choice {
+/// An empty or missing dynamic id means the first installed wallpaper.
+/// A landscape choice whose file is not installed falls back the same way,
+/// so the desktop still has a picture.
+pub fn resolve_id(choice: &Choice, installed: &[Dynamic], landscapes: &[Landscape]) -> Choice {
     let mut choice = choice.clone();
+    if choice.kind == Kind::Landscape {
+        if landscapes.iter().any(|item| item.id == choice.id) {
+            return choice;
+        }
+        choice.kind = Kind::Dynamic;
+        choice.id.clear();
+    }
     if choice.kind == Kind::Dynamic
         && (choice.id.is_empty() || !installed.iter().any(|item| item.id == choice.id))
     {
@@ -307,6 +428,12 @@ mod tests {
     fn name_from_id() {
         assert_eq!(display_name("wavy-blue"), "Wavy Blue");
         assert_eq!(display_name("dynamic-blue"), "Blue");
+        assert_eq!(landscape_title("beach-nenad-radojcic"), "Beach");
+        assert_eq!(
+            landscape_credit("beach-nenad-radojcic").as_deref(),
+            Some("Nenad Radojcic")
+        );
+        assert_eq!(landscape_credit("beach"), None);
     }
 
     #[test]
@@ -412,12 +539,74 @@ mod tests {
     }
 
     #[test]
+    fn landscape_files_are_their_own_category() {
+        let root = temp_root("landscape");
+        touch(&root.join("landscape/beach-nenad-radojcic.jpg"));
+        touch(&root.join("landscape/peaks-marek-piwnicki.jpg"));
+        touch(&root.join("landscape/.DS_Store"));
+        touch(&root.join("dynamic-wallpapers/dynamic-blue/blue-light.jpg"));
+        touch(&root.join("dynamic-wallpapers/dynamic-blue/blue-dark.jpg"));
+        touch(&root.join("source/blue-source.png"));
+        let dynamic = scan(std::slice::from_ref(&root));
+        assert_eq!(dynamic.len(), 1);
+        assert_eq!(dynamic[0].id, "dynamic-blue");
+        let pictures = scan_landscapes(std::slice::from_ref(&root));
+        assert_eq!(pictures.len(), 2);
+        assert_eq!(pictures[0].id, "beach-nenad-radojcic");
+        assert!(pictures[0].path.ends_with("beach-nenad-radojcic.jpg"));
+        let choice = resolve_id(
+            &Choice {
+                kind: Kind::Landscape,
+                id: "peaks-marek-piwnicki".to_owned(),
+                ..Choice::default()
+            },
+            &dynamic,
+            &pictures,
+        );
+        assert_eq!(choice.kind, Kind::Landscape);
+        assert_eq!(choice.id, "peaks-marek-piwnicki");
+        let parsed = parse(&format(&choice));
+        assert_eq!(parsed.kind, Kind::Landscape);
+        assert_eq!(parsed.id, "peaks-marek-piwnicki");
+        let missing = resolve_id(
+            &Choice {
+                kind: Kind::Landscape,
+                id: "gone".to_owned(),
+                ..Choice::default()
+            },
+            &dynamic,
+            &[],
+        );
+        assert_eq!(missing.kind, Kind::Dynamic);
+        assert_eq!(missing.id, "dynamic-blue");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_home_landscape_replaces_the_system_copy() {
+        let system = temp_root("landscape-system");
+        let home = temp_root("landscape-home");
+        touch(&system.join("landscape/beach-nenad-radojcic.jpg"));
+        touch(&system.join("landscape/sunset-marek-piwnicki.jpg"));
+        touch(&home.join("landscape/beach-nenad-radojcic.jpg"));
+        let found = scan_landscapes(&[home.clone(), system.clone()]);
+        assert_eq!(found.len(), 2);
+        let beach = found
+            .iter()
+            .find(|item| item.id == "beach-nenad-radojcic")
+            .unwrap();
+        assert!(beach.path.starts_with(&home));
+        let _ = std::fs::remove_dir_all(&system);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn a_missing_id_becomes_the_first_wallpaper() {
         let root = temp_root("order");
         touch(&root.join("amber/light.jpg"));
         touch(&root.join("wavy-blue/light.jpg"));
         let found = scan(std::slice::from_ref(&root));
-        let choice = resolve_id(&Choice::default(), &found);
+        let choice = resolve_id(&Choice::default(), &found, &[]);
         assert_eq!(choice.id, "amber");
         let _ = std::fs::remove_dir_all(&root);
     }
