@@ -52,35 +52,66 @@ fn load_css() {
     crate::panes::appearance::install_live_accent(&display);
 }
 
+fn menu_item(label: &str, action: &str, accel: &str) -> gio::MenuItem {
+    let item = gio::MenuItem::new(Some(label), Some(action));
+    item.set_attribute_value("accel", Some(&accel.to_variant()));
+    item
+}
+
+fn section(items: &[gio::MenuItem]) -> gio::Menu {
+    let menu = gio::Menu::new();
+    for item in items {
+        menu.append_item(item);
+    }
+    menu
+}
+
+/// Edit, then View. The panel supplies the application menu, named System
+/// Settings, and the Window menu. System Settings is not part of Folio.
 fn menubar(panes: &[(&'static str, String)]) -> gio::Menu {
     let menubar = gio::Menu::new();
 
-    let app_menu = gio::Menu::new();
-    app_menu.append(Some(&tr("About System Settings")), Some("app.about"));
-    let quit = gio::Menu::new();
-    quit.append(Some(&tr("Quit System Settings")), Some("app.quit"));
-    app_menu.append_section(None, &quit);
-    menubar.append_submenu(Some(&tr("System Settings")), &app_menu);
-
     let edit = gio::Menu::new();
-    edit.append(Some(&tr("Find")), Some("app.find"));
+    edit.append_section(
+        None,
+        &section(&[
+            menu_item(&tr("Undo"), "win.undo", "<Control>z"),
+            menu_item(&tr("Redo"), "win.redo", "<Control><Shift>z"),
+        ]),
+    );
+    edit.append_section(
+        None,
+        &section(&[
+            menu_item(&tr("Cut"), "win.cut", "<Control>x"),
+            menu_item(&tr("Copy"), "win.copy", "<Control>c"),
+            menu_item(&tr("Paste"), "win.paste", "<Control>v"),
+            menu_item(&tr("Delete"), "win.delete", "Delete"),
+            menu_item(&tr("Select All"), "win.select-all", "<Control>a"),
+        ]),
+    );
     menubar.append_submenu(Some(&tr("Edit")), &edit);
 
     let view = gio::Menu::new();
+    view.append_section(
+        None,
+        &section(&[
+            menu_item(&tr("Back"), "app.back", "<Alt>Left"),
+            menu_item(&tr("Forward"), "app.forward", "<Alt>Right"),
+        ]),
+    );
+    view.append_section(
+        None,
+        &section(&[menu_item(&tr("Search"), "app.find", "<Control>f")]),
+    );
+    let categories = gio::Menu::new();
     for (id, title) in panes {
         let item = gio::MenuItem::new(Some(title), None);
         item.set_action_and_target_value(Some("app.show-pane"), Some(&id.to_variant()));
-        view.append_item(&item);
+        categories.append_item(&item);
     }
+    view.append_section(None, &categories);
     menubar.append_submenu(Some(&tr("View")), &view);
 
-    let win = gio::Menu::new();
-    win.append(Some(&tr("Close")), Some("app.close"));
-    menubar.append_submenu(Some(&tr("Window")), &win);
-
-    let help = gio::Menu::new();
-    help.append(Some(&tr("System Settings Help")), Some("app.help"));
-    menubar.append_submenu(Some(&tr("Help")), &help);
     menubar
 }
 
@@ -108,6 +139,26 @@ fn add_actions(app: &gtk::Application) {
     app.add_action(&close);
     app.set_accels_for_action("app.close", &["<Control>w"]);
 
+    let back = gio::SimpleAction::new("back", None);
+    back.set_enabled(false);
+    let a = app.downgrade();
+    back.connect_activate(move |_, _| {
+        if let Some(app) = a.upgrade() {
+            window(&app).go_back();
+        }
+    });
+    app.add_action(&back);
+
+    let forward = gio::SimpleAction::new("forward", None);
+    forward.set_enabled(false);
+    let a = app.downgrade();
+    forward.connect_activate(move |_, _| {
+        if let Some(app) = a.upgrade() {
+            window(&app).go_forward();
+        }
+    });
+    app.add_action(&forward);
+
     let find = gio::SimpleAction::new("find", None);
     let a = app.downgrade();
     find.connect_activate(move |_, _| {
@@ -120,7 +171,11 @@ fn add_actions(app: &gtk::Application) {
     app.add_action(&find);
     app.set_accels_for_action("app.find", &["<Control>f"]);
 
-    let show = gio::SimpleAction::new("show-pane", Some(glib::VariantTy::STRING));
+    let show = gio::SimpleAction::new_stateful(
+        "show-pane",
+        Some(glib::VariantTy::STRING),
+        &"".to_variant(),
+    );
     let a = app.downgrade();
     show.connect_activate(move |_, param| {
         let (Some(app), Some(id)) = (a.upgrade(), param.and_then(|p| p.str())) else {

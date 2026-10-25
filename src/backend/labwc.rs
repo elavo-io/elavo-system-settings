@@ -307,8 +307,14 @@ fn describe(action: &roxmltree::Node) -> String {
             ("foot", "Open Terminal"),
             ("elavo-grim-region", "Screenshot of a region"),
             ("elavo-dock --activate", "Open dock item"),
-            ("elavo-switcher --window-next", "Next window of this application"),
-            ("elavo-switcher --window-previous", "Previous window of this application"),
+            (
+                "elavo-switcher --window-next",
+                "Next window of this application",
+            ),
+            (
+                "elavo-switcher --window-previous",
+                "Previous window of this application",
+            ),
             ("elavo-switcher --previous", "Previous application"),
             ("elavo-switcher --next", "Next application"),
             ("elavo-switcher --scoped", "Open the app switcher"),
