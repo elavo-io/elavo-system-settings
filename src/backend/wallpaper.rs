@@ -57,11 +57,14 @@ pub struct Dynamic {
 }
 
 /// One landscape picture. `id` is the file stem, `beach-nenad-radojcic`:
-/// the place, then the photographer.
+/// the place, then the photographer. `thumb` is the small picker preview
+/// in `landscape/thumbs/`. The pane must not decode `path`; those files
+/// are the full-size pictures.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Landscape {
     pub id: String,
     pub path: PathBuf,
+    pub thumb: Option<PathBuf>,
 }
 
 pub fn display_name(id: &str) -> String {
@@ -169,7 +172,9 @@ pub fn catalog() -> Vec<Dynamic> {
 
 /// Landscape pictures are image files in a directory named `landscape`.
 /// The first root that has an id wins, same as a dynamic wallpaper. A
-/// dynamic directory is not searched, and `source` is skipped.
+/// dynamic directory is not searched, and `source` is skipped. A file in
+/// `landscape/thumbs/`, or a sibling whose name ends in `-thumb`, is the
+/// picker preview and is not itself a picture.
 pub fn scan_landscapes(roots: &[PathBuf]) -> Vec<Landscape> {
     let mut found: Vec<Landscape> = Vec::new();
     for root in roots {
@@ -207,11 +212,12 @@ fn walk_landscapes(dir: &Path, found: &mut Vec<Landscape>) {
             let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
                 continue;
             };
-            if id.is_empty() || found.iter().any(|item| item.id == id) {
+            if id.is_empty() || id.ends_with("-thumb") || found.iter().any(|item| item.id == id) {
                 continue;
             }
             found.push(Landscape {
                 id: id.to_owned(),
+                thumb: landscape_thumb(dir, id),
                 path,
             });
         }
@@ -232,6 +238,26 @@ fn walk_landscapes(dir: &Path, found: &mut Vec<Landscape>) {
     for child in children {
         walk_landscapes(&child, found);
     }
+}
+
+/// The small file the picker shows. The full picture stays on disk for
+/// swaybg. `landscape/thumbs/<id>.jpg` is the installed preview. A sibling
+/// named `<id>-thumb.jpg` counts too.
+fn landscape_thumb(dir: &Path, id: &str) -> Option<PathBuf> {
+    let nested = dir.join("thumbs");
+    for ext in ROLES {
+        let path = nested.join(format!("{id}.{ext}"));
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    for ext in ROLES {
+        let path = dir.join(format!("{id}-thumb.{ext}"));
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 fn is_picture(path: &Path) -> bool {
@@ -543,6 +569,8 @@ mod tests {
         let root = temp_root("landscape");
         touch(&root.join("landscape/beach-nenad-radojcic.jpg"));
         touch(&root.join("landscape/peaks-marek-piwnicki.jpg"));
+        touch(&root.join("landscape/thumbs/beach-nenad-radojcic.jpg"));
+        touch(&root.join("landscape/beach-nenad-radojcic-thumb.jpg"));
         touch(&root.join("landscape/.DS_Store"));
         touch(&root.join("dynamic-wallpapers/dynamic-blue/blue-light.jpg"));
         touch(&root.join("dynamic-wallpapers/dynamic-blue/blue-dark.jpg"));
@@ -554,6 +582,11 @@ mod tests {
         assert_eq!(pictures.len(), 2);
         assert_eq!(pictures[0].id, "beach-nenad-radojcic");
         assert!(pictures[0].path.ends_with("beach-nenad-radojcic.jpg"));
+        assert!(pictures[0]
+            .thumb
+            .as_ref()
+            .is_some_and(|path| path.ends_with("landscape/thumbs/beach-nenad-radojcic.jpg")));
+        assert!(pictures.iter().all(|item| !item.id.ends_with("-thumb")));
         let choice = resolve_id(
             &Choice {
                 kind: Kind::Landscape,

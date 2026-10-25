@@ -39,8 +39,6 @@ mod thumb {
     use super::*;
 
     mod imp {
-        use gtk::subclass::prelude::*;
-
         use super::*;
 
         #[derive(Default)]
@@ -250,7 +248,7 @@ pub fn build() -> gtk::Widget {
 
     let mut landscape_buttons: Vec<gtk::ToggleButton> = Vec::new();
     for paper in &landscapes {
-        let picture = thumb::Thumb::new(Some(&paper.path));
+        let picture = thumb::Thumb::new(paper.thumb.as_deref());
         let button = card(&wallpaper::landscape_title(&paper.id), &picture);
         if let Some(credit) = wallpaper::landscape_credit(&paper.id) {
             button.set_tooltip_text(Some(&credit));
@@ -491,17 +489,11 @@ pub fn build() -> gtk::Widget {
     if !landscapes.is_empty() {
         page.append(&widgets::heading(&tr("Landscape")));
         page.append(&landscape_gallery);
-        page.append(&widgets::caption(&tr(
-            "A landscape picture stays as it is. It does not switch with Appearance.",
-        )));
     }
     page.append(&widgets::group(
         Some(&tr("Your pictures")),
         &[widgets::plain_row(&your)],
     ));
-    page.append(&widgets::caption(&tr(
-        "A picture you choose stays as it is. It does not switch with Appearance.",
-    )));
     page.append(&status);
     page.upcast()
 }
