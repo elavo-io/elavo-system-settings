@@ -114,6 +114,9 @@ struct Pane {
     fixed: gtk::Fixed,
     tiles: RefCell<Vec<gtk::Button>>,
     drag_start: Cell<(i32, i32)>,
+    /// Where the pointer went down, and how far it has moved, in the canvas.
+    drag_from: Cell<(f64, f64)>,
+    drag_delta: Cell<(f64, f64)>,
     layout: Cell<(f64, f64, f64, i32, i32)>,
 
     display_row: gtk::ListBoxRow,
@@ -244,30 +247,43 @@ impl Pane {
                     p.select(i);
                 }
             });
+            // GestureDrag's offsets are in the tile's coordinates, and the tile
+            // moves under the pointer, so each move skews the next. The pointer
+            // is measured in the canvas instead.
             let drag = gtk::GestureDrag::new();
             let p = Rc::downgrade(self);
-            drag.connect_drag_begin(move |_, _, _| {
+            drag.connect_drag_begin(move |gesture, x, y| {
                 if let Some(p) = p.upgrade() {
                     p.select(i);
                     let e = &p.edits.borrow()[i];
                     p.drag_start.set((e.x, e.y));
+                    p.drag_from.set(p.canvas_point(gesture, x, y));
+                    p.drag_delta.set((0.0, 0.0));
                 }
             });
             let p = Rc::downgrade(self);
-            drag.connect_drag_update(move |_, dx, dy| {
+            drag.connect_drag_update(move |gesture, _, _| {
                 if let Some(p) = p.upgrade() {
+                    let Some((cx, cy)) = gesture.point(None) else {
+                        return;
+                    };
+                    let (px, py) = p.canvas_point(gesture, cx, cy);
+                    let (fx, fy) = p.drag_from.get();
+                    let (dx, dy) = (px - fx, py - fy);
+                    p.drag_delta.set((dx, dy));
                     let (k, ox, oy, minx, miny) = p.layout.get();
                     let (sx, sy) = p.drag_start.get();
-                    let x = ox + f64::from(sx - minx) * k + dx;
-                    let y = oy + f64::from(sy - miny) * k + dy;
+                    let x = ox + f64::from(sx - minx) * k + 2.0 + dx;
+                    let y = oy + f64::from(sy - miny) * k + 2.0 + dy;
                     if let Some(t) = p.tiles.borrow().get(i) {
                         p.fixed.move_(t, x, y);
                     }
                 }
             });
             let p = Rc::downgrade(self);
-            drag.connect_drag_end(move |_, dx, dy| {
+            drag.connect_drag_end(move |_, _, _| {
                 let Some(p) = p.upgrade() else { return };
+                let (dx, dy) = p.drag_delta.get();
                 let (k, ..) = p.layout.get();
                 if k <= 0.0 || (dx.abs() < 3.0 && dy.abs() < 3.0) {
                     p.place_tiles();
@@ -296,6 +312,17 @@ impl Pane {
             self.tiles.borrow_mut().push(tile);
         }
         self.place_tiles();
+    }
+
+    /// A point on the gesture's tile, in the canvas's coordinates.
+    fn canvas_point(&self, gesture: &gtk::GestureDrag, x: f64, y: f64) -> (f64, f64) {
+        gesture
+            .widget()
+            .and_then(|tile| {
+                tile.compute_point(&self.fixed, &gtk::graphene::Point::new(x as f32, y as f32))
+            })
+            .map(|at| (f64::from(at.x()), f64::from(at.y())))
+            .unwrap_or((x, y))
     }
 
     /// Fit every enabled display into the canvas, centered.
@@ -757,6 +784,8 @@ pub fn build() -> gtk::Widget {
         fixed,
         tiles: RefCell::default(),
         drag_start: Cell::new((0, 0)),
+        drag_from: Cell::new((0.0, 0.0)),
+        drag_delta: Cell::new((0.0, 0.0)),
         layout: Cell::new((1.0, 0.0, 0.0, 0, 0)),
         display_row,
         display_pick,
