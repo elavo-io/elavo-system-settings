@@ -9,19 +9,19 @@
   <vendor_url>https://github.com/elavo-io</vendor_url>
   <icon_name>io.elavo.SystemSettings</icon_name>
 
-  <action id="io.elavo.SystemSettings.update-check">
-    <description>Check for system updates</description>
-    <message>Authentication is required to check for system updates.</message>
+  <action id="io.elavo.SystemSettings.update-upgrade">
+    <description>Install a system update</description>
+    <message>Authentication is required to install a system update.</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
-    <annotate key="org.freedesktop.policykit.exec.argv1">check</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">upgrade</annotate>
   </action>
 
-  <action id="io.elavo.SystemSettings.update-upgrade">
+  <action id="io.elavo.SystemSettings.update-download">
     <description>Download a system update</description>
     <message>Authentication is required to download a system update.</message>
     <defaults>
@@ -30,7 +30,31 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
-    <annotate key="org.freedesktop.policykit.exec.argv1">upgrade</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">download</annotate>
+  </action>
+
+  <action id="io.elavo.SystemSettings.update-install">
+    <description>Install a downloaded system update</description>
+    <message>Authentication is required to install a downloaded system update.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">install</annotate>
+  </action>
+
+  <action id="io.elavo.SystemSettings.update-auto">
+    <description>Change automatic system updates</description>
+    <message>Authentication is required to change automatic system updates.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">auto</annotate>
   </action>
 
   <action id="io.elavo.SystemSettings.update-switch">

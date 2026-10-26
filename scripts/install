@@ -16,6 +16,11 @@ install -Dm755 target/release/elavo-system-settings-helper \
 install -Dm644 "data/${id}.desktop" "${dest}${prefix}/share/applications/${id}.desktop"
 install -Dm644 "data/${id}.metainfo.xml" "${dest}${prefix}/share/metainfo/${id}.metainfo.xml"
 install -Dm644 "data/${id}.policy" "${dest}${prefix}/share/polkit-1/actions/${id}.policy"
+# The service names the helper's fixed path, so these do not follow PREFIX
+# either. The image enables the timer.
+for unit in elavo-system-update.service elavo-system-update.timer; do
+    install -Dm644 "data/${unit}" "${dest}/usr/lib/systemd/system/${unit}"
+done
 
 for po in po/*.po; do
     [ -e "${po}" ] || continue

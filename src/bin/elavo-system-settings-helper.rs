@@ -6,13 +6,24 @@
 //! arguments and does the one thing asked.
 //!
 //! ```text
-//! elavo-system-settings-helper check
 //! elavo-system-settings-helper upgrade
+//! elavo-system-settings-helper download
+//! elavo-system-settings-helper install
+//! elavo-system-settings-helper auto off|download|install
+//! elavo-system-settings-helper auto-run
 //! elavo-system-settings-helper switch stable|latest
 //! elavo-system-settings-helper rollback
 //! elavo-system-settings-helper lid suspend|lock|ignore|poweroff
 //! elavo-system-settings-helper login-window list|name
 //! ```
+//!
+//! `auto-run` is what `elavo-system-update.service` runs as root on a
+//! timer. It does what `/etc/elavo/updates.conf` says, so turning automatic
+//! updates on asks for a password once and never again.
+
+#[allow(dead_code)]
+#[path = "../backend/auto.rs"]
+mod auto;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::FromRawFd;
@@ -25,11 +36,19 @@ const LID_DROPIN_DIR: &str = "/etc/systemd/logind.conf.d";
 const LID_DROPIN: &str = "/etc/systemd/logind.conf.d/50-elavo-lid.conf";
 const GREETER_DIR: &str = "/etc/elavo";
 const GREETER_CONF: &str = "/etc/elavo/greeter.conf";
+const ELAVO_DIR: &str = "/etc/elavo";
+const STAGED_LOCKED: &str = "/run/ostree/staged-deployment-locked";
 
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
-    Check,
+    /// Download and install at the next restart.
     Upgrade,
+    /// Download only; the update waits for `install`.
+    Download,
+    /// Let a downloaded update install at the next restart.
+    Install,
+    Auto(auto::Auto),
+    AutoRun,
     Switch(Channel),
     Rollback,
     Lid(Lid),
@@ -89,8 +108,13 @@ impl Lid {
 fn parse(args: &[String]) -> Result<Command, String> {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
-        ["check"] => Ok(Command::Check),
         ["upgrade"] => Ok(Command::Upgrade),
+        ["download"] => Ok(Command::Download),
+        ["install"] => Ok(Command::Install),
+        ["auto", mode] => auto::Auto::from_arg(mode)
+            .map(Command::Auto)
+            .ok_or_else(|| format!("unsupported command: auto {mode}")),
+        ["auto-run"] => Ok(Command::AutoRun),
         ["rollback"] => Ok(Command::Rollback),
         ["switch", "stable"] => Ok(Command::Switch(Channel::Stable)),
         ["switch", "latest"] => Ok(Command::Switch(Channel::Latest)),
@@ -257,19 +281,55 @@ fn booted() -> Result<Booted, String> {
     })
 }
 
+fn bootc_upgrade(extra: &[&str]) -> Result<(), String> {
+    let mut p = tool("bootc");
+    p.arg("upgrade");
+    p.args(extra);
+    let fds = attach_progress(&mut p)?;
+    run_with_progress(p, fds)
+}
+
+fn install_downloaded() -> Result<(), String> {
+    run({
+        let mut p = tool("bootc");
+        p.args(["upgrade", "--from-downloaded"]);
+        p
+    })
+}
+
+fn write_atomically(dir: &str, path: &str, text: &str) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let tmp = format!("{path}.tmp");
+    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
 fn execute(command: Command) -> Result<(), String> {
     match command {
-        Command::Check => run({
-            let mut p = tool("bootc");
-            p.args(["upgrade", "--check"]);
-            p
-        }),
         Command::Upgrade => {
-            let mut p = tool("bootc");
-            p.arg("upgrade");
-            let fds = attach_progress(&mut p)?;
-            run_with_progress(p, fds)
+            // An update held back by a download-only run would otherwise
+            // stay held back.
+            if Path::new(STAGED_LOCKED).exists() {
+                install_downloaded()?;
+            }
+            bootc_upgrade(&[])
         }
+        Command::Download => bootc_upgrade(&["--download-only"]),
+        Command::Install => install_downloaded(),
+        Command::Auto(mode) => write_atomically(ELAVO_DIR, auto::CONFIG, &mode.render()),
+        Command::AutoRun => match auto::Auto::read() {
+            auto::Auto::Off => {
+                println!("Automatic updates are off.");
+                Ok(())
+            }
+            auto::Auto::Download => bootc_upgrade(&["--download-only"]),
+            auto::Auto::Install => {
+                if Path::new(STAGED_LOCKED).exists() {
+                    install_downloaded()?;
+                }
+                bootc_upgrade(&[])
+            }
+        },
         Command::Rollback => run({
             let mut p = tool("bootc");
             p.arg("rollback");
@@ -329,7 +389,10 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
     if !Path::new("/run/ostree-booted").exists()
-        && !matches!(command, Command::Lid(_) | Command::LoginWindow(_))
+        && !matches!(
+            command,
+            Command::Lid(_) | Command::LoginWindow(_) | Command::Auto(_)
+        )
     {
         eprintln!(
             "elavo-system-settings-helper: this computer is not running an image-based system"
@@ -355,8 +418,14 @@ mod tests {
 
     #[test]
     fn accepts_the_fixed_commands() {
-        assert_eq!(parse(&args(&["check"])), Ok(Command::Check));
         assert_eq!(parse(&args(&["upgrade"])), Ok(Command::Upgrade));
+        assert_eq!(parse(&args(&["download"])), Ok(Command::Download));
+        assert_eq!(parse(&args(&["install"])), Ok(Command::Install));
+        assert_eq!(parse(&args(&["auto-run"])), Ok(Command::AutoRun));
+        assert_eq!(
+            parse(&args(&["auto", "download"])),
+            Ok(Command::Auto(auto::Auto::Download))
+        );
         assert_eq!(parse(&args(&["rollback"])), Ok(Command::Rollback));
         assert_eq!(
             parse(&args(&["switch", "latest"])),
@@ -377,7 +446,12 @@ mod tests {
         for bad in [
             &[][..],
             &["status"],
-            &["check", "--now"],
+            &["check"],
+            &["auto"],
+            &["auto", "on"],
+            &["auto", "install", "extra"],
+            &["auto-run", "now"],
+            &["download", "--apply"],
             &["switch"],
             &["switch", "ghcr.io/evil/image:latest"],
             &["switch", "stable", "extra"],

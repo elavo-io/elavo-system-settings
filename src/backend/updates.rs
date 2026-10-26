@@ -1,5 +1,6 @@
-//! Image updates. The deployments are read from `rpm-ostree status --json`,
-//! which needs no password; checking, downloading, switching channel, and
+//! Image updates. The deployments are read from `rpm-ostree status --json`
+//! and the published build from the registry with `skopeo`, neither of
+//! which needs a password. Downloading, installing, switching channel, and
 //! rolling back go through the helper, which calls `bootc`.
 
 use gtk::gio;
@@ -92,6 +93,96 @@ pub fn parse(json: &str) -> Status {
         }
     }
     status
+}
+
+/// The build that is published under the booted image's tag.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Remote {
+    pub digest: String,
+    /// RFC 3339, as the registry reports it.
+    pub created: String,
+    pub revision: Option<String>,
+}
+
+pub fn parse_remote(json: &str) -> Option<Remote> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let digest = value.get("Digest")?.as_str()?.to_owned();
+    let created = value
+        .get("Created")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let revision = value
+        .pointer("/Labels/org.opencontainers.image.revision")
+        .and_then(|v| v.as_str())
+        .and_then(revision_sha)
+        .map(str::to_owned);
+    Some(Remote {
+        digest,
+        created,
+        revision,
+    })
+}
+
+/// Reads the registry. The image is one manifest, so its digest is the one
+/// `rpm-ostree` records for a deployment.
+pub async fn remote(image: &str) -> Result<Remote, String> {
+    let reference = format!("docker://{image}");
+    let text = command_text(&["skopeo", "inspect", "--no-tags", &reference])
+        .await
+        .ok_or_else(|| crate::i18n::tr("The update server could not be reached."))?;
+    parse_remote(&text)
+        .ok_or_else(|| crate::i18n::tr("The update server sent an unexpected reply."))
+}
+
+/// ostree writes this while a staged deployment is held back from the next
+/// restart, which is what `bootc upgrade --download-only` leaves.
+const STAGED_LOCKED: &str = "/run/ostree/staged-deployment-locked";
+
+pub fn staged_locked() -> bool {
+    std::path::Path::new(STAGED_LOCKED).exists()
+}
+
+/// Where this computer stands. One of these is shown at a time, each with
+/// its one button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    /// Not checked yet, or the check failed.
+    Unknown,
+    UpToDate,
+    /// A newer build is published and nothing is downloaded.
+    Available,
+    /// Downloaded, held back until Install Now.
+    Downloaded,
+    /// Installs at the next restart.
+    Ready,
+}
+
+pub fn phase(status: &Status, locked: bool, remote: Option<&Remote>) -> Phase {
+    if status.staged.is_some() {
+        return if locked {
+            Phase::Downloaded
+        } else {
+            Phase::Ready
+        };
+    }
+    let Some(remote) = remote else {
+        return Phase::Unknown;
+    };
+    match &status.booted {
+        Some(b) if b.digest == remote.digest => Phase::UpToDate,
+        Some(_) => Phase::Available,
+        None => Phase::Unknown,
+    }
+}
+
+/// The Elavo version of the running system, from os-release.
+pub fn os_version() -> Option<String> {
+    let text = std::fs::read_to_string("/usr/lib/os-release").ok()?;
+    text.lines()
+        .find_map(|l| l.strip_prefix("VERSION="))
+        .map(|v| v.trim_matches(['"', '\'']).to_owned())
+        .filter(|v| !v.is_empty())
 }
 
 const REVISION_FILE: &str = "/usr/lib/elavo-image-revision";
@@ -239,57 +330,121 @@ pub async fn tag_exists(image: &str) -> bool {
         .is_some()
 }
 
-/// Commit subjects between the running image and `to`, newest last as
-/// GitHub returns them. Empty when either revision is missing.
-pub fn format_notes(json: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(json).ok()?;
-    let commits = value.get("commits")?.as_array()?;
-    let subjects: Vec<&str> = commits
-        .iter()
-        .filter_map(|c| c.pointer("/commit/message").and_then(|m| m.as_str()))
-        .filter_map(|m| m.lines().next().map(str::trim))
-        .filter(|s| !s.is_empty())
-        .collect();
-    if subjects.is_empty() {
-        return None;
-    }
-    const SHOWN: usize = 12;
-    let mut lines: Vec<String> = subjects
-        .iter()
-        .take(SHOWN)
-        .map(|s| (*s).to_owned())
-        .collect();
-    if subjects.len() > SHOWN {
-        lines.push(format!(
-            "{} {}",
-            subjects.len() - SHOWN,
-            crate::i18n::tr("more changes")
-        ));
-    }
-    Some(lines.join("\n"))
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Commit {
+    pub sha: String,
+    pub subject: String,
+    /// RFC 3339.
+    pub date: String,
 }
 
-/// What's new in `image` since this computer's build.
-pub async fn changelog(image: &str) -> Option<String> {
-    let from = booted_revision()?;
-    let to = image_revision(image).await?;
+/// The commits between two builds, newest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Changes {
+    pub commits: Vec<Commit>,
+    /// All of them. GitHub lists at most 250 in `commits`.
+    pub total: usize,
+}
+
+/// A GitHub compare reply. GitHub lists commits oldest first.
+pub fn parse_changes(json: &str) -> Option<Changes> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let list = value.get("commits")?.as_array()?;
+    let mut commits: Vec<Commit> = list
+        .iter()
+        .filter_map(|c| {
+            let message = c.pointer("/commit/message")?.as_str()?;
+            let subject = message.lines().next()?.trim();
+            if subject.is_empty() {
+                return None;
+            }
+            Some(Commit {
+                sha: c
+                    .get("sha")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+                subject: subject.to_owned(),
+                date: c
+                    .pointer("/commit/committer/date")
+                    .or_else(|| c.pointer("/commit/author/date"))
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+            })
+        })
+        .collect();
+    if commits.is_empty() {
+        return None;
+    }
+    commits.reverse();
+    let total = value
+        .get("total_commits")
+        .and_then(|t| t.as_u64())
+        .map(|t| t as usize)
+        .unwrap_or(commits.len())
+        .max(commits.len());
+    Some(Changes { commits, total })
+}
+
+/// The commit `deployment` was built from. The running one records it in a
+/// file; any other is read from the registry.
+pub async fn revision_of(deployment: &Deployment) -> Option<String> {
+    if deployment.booted {
+        if let Some(revision) = booted_revision() {
+            return Some(revision);
+        }
+    }
+    image_revision(&at_digest(&deployment.image, &deployment.digest)).await
+}
+
+/// What changed between the running build and the build at `to`.
+pub async fn changes(booted: &Deployment, to: &str) -> Option<Changes> {
+    let from = revision_of(booted).await?;
     if from == to {
         return None;
     }
-    let repo = github_repo(image)?;
-    let url = format!("https://api.github.com/repos/{repo}/compare/{from}...{to}");
-    let text = command_text(&[
-        "curl",
-        "-fsSL",
-        "-H",
-        "Accept: application/vnd.github+json",
-        "-H",
-        "User-Agent: elavo-system-settings",
-        &url,
-    ])
-    .await?;
-    format_notes(&text)
+    let repo = github_repo(&booted.image)?;
+    let base = format!("https://api.github.com/repos/{repo}/compare/{from}...{to}");
+    let page = |n: usize| {
+        let url = format!("{base}?per_page={PAGE}&page={n}");
+        async move {
+            let text = command_text(&[
+                "curl",
+                "-fsSL",
+                "-H",
+                "Accept: application/vnd.github+json",
+                "-H",
+                "User-Agent: elavo-system-settings",
+                &url,
+            ])
+            .await?;
+            parse_changes(&text)
+        }
+    };
+    let first = page(1).await?;
+    let last = first.total.div_ceil(PAGE);
+    if last <= 1 {
+        return Some(first);
+    }
+    // Pages run oldest first, so the newest changes are on the last ones.
+    let total = first.total;
+    let mut newest = page(last).await?;
+    if newest.commits.len() < PAGE {
+        let before = if last == 2 {
+            Some(first)
+        } else {
+            page(last - 1).await
+        };
+        if let Some(before) = before {
+            newest.commits.extend(before.commits);
+        }
+    }
+    newest.total = total;
+    Some(newest)
 }
+
+const PAGE: usize = 100;
 
 pub async fn status() -> Result<Status, String> {
     let process = gio::Subprocess::newv(
@@ -388,18 +543,56 @@ mod tests {
     }
 
     #[test]
-    fn notes_are_commit_subjects() {
+    fn changes_are_newest_first() {
         let json = r#"{
+            "total_commits": 300,
             "commits": [
-                {"commit": {"message": "First change\n\nThe body."}},
-                {"commit": {"message": "Second change"}}
+                {"sha": "aaa", "commit": {"message": "First change\n\nThe body.",
+                    "committer": {"date": "2026-10-24T10:00:00Z"}}},
+                {"sha": "bbb", "commit": {"message": "Second change",
+                    "author": {"date": "2026-10-25T10:00:00Z"}}}
             ]
         }"#;
+        let changes = parse_changes(json).unwrap();
+        assert_eq!(changes.total, 300);
+        assert_eq!(changes.commits[0].subject, "Second change");
+        assert_eq!(changes.commits[0].date, "2026-10-25T10:00:00Z");
+        assert_eq!(changes.commits[1].subject, "First change");
+        assert_eq!(changes.commits[1].sha, "aaa");
+        assert_eq!(parse_changes("{}"), None);
+    }
+
+    #[test]
+    fn remote_reads_digest_and_revision() {
+        let json = r#"{"Digest": "sha256:0b69", "Created": "2026-10-26T02:40:09Z",
+            "Labels": {"org.opencontainers.image.revision": "bb79b432e2f4132c5092d3c4e6083ae954462db1"}}"#;
+        let remote = parse_remote(json).unwrap();
+        assert_eq!(remote.digest, "sha256:0b69");
         assert_eq!(
-            format_notes(json).as_deref(),
-            Some("First change\nSecond change")
+            remote.revision.as_deref(),
+            Some("bb79b432e2f4132c5092d3c4e6083ae954462db1")
         );
-        assert_eq!(format_notes("{}"), None);
+        assert_eq!(parse_remote("{}"), None);
+    }
+
+    #[test]
+    fn one_phase_at_a_time() {
+        let mut status = parse(SAMPLE);
+        let same = Remote {
+            digest: "sha256:bbbb".into(),
+            ..Remote::default()
+        };
+        let newer = Remote {
+            digest: "sha256:dddd".into(),
+            ..Remote::default()
+        };
+        // A staged update wins over whatever the registry says.
+        assert_eq!(phase(&status, false, Some(&newer)), Phase::Ready);
+        assert_eq!(phase(&status, true, None), Phase::Downloaded);
+        status.staged = None;
+        assert_eq!(phase(&status, false, None), Phase::Unknown);
+        assert_eq!(phase(&status, false, Some(&same)), Phase::UpToDate);
+        assert_eq!(phase(&status, false, Some(&newer)), Phase::Available);
     }
 
     #[test]

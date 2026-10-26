@@ -3,6 +3,7 @@
 
 pub mod accent;
 pub mod accounts;
+pub mod auto;
 pub mod bluetooth;
 pub mod dbus;
 pub mod greeter;

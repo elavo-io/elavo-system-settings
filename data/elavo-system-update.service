@@ -1,0 +1,15 @@
+[Unit]
+Description=Elavo automatic system update
+Documentation=file:///etc/elavo/updates.conf
+ConditionPathExists=/run/ostree-booted
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Skip metered connections. NetworkManager's Metered is 1 (yes) or 3
+# (guessed yes) on a metered connection.
+ExecCondition=/bin/sh -c '/usr/bin/busctl get-property org.freedesktop.NetworkManager /org/freedesktop/NetworkManager org.freedesktop.NetworkManager Metered | grep -qE "^u [024]$"'
+ExecStart=/usr/libexec/elavo-system-settings-helper auto-run
+Nice=19
+IOSchedulingClass=idle
