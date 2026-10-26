@@ -16,8 +16,8 @@ path = "src/bin/elavo-system-settings-helper.rs"
 
 [dependencies]
 gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
-elavo-dock-settings = { git = "https://github.com/elavo-io/elavo-folio", tag = "v0.3.2.0" }
-elavo-switcher-settings = { git = "https://github.com/elavo-io/elavo-folio", tag = "v0.3.2.0" }
+elavo-dock-settings = { git = "https://github.com/elavo-io/elavo-folio", tag = "v0.3.3.1" }
+elavo-switcher-settings = { git = "https://github.com/elavo-io/elavo-folio", tag = "v0.3.3.1" }
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 libpulse-binding = "2"
