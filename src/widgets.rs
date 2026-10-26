@@ -279,6 +279,14 @@ pub fn parent_window(widget: &impl IsA<gtk::Widget>) -> Option<gtk::Window> {
 /// A modal window over `widget`'s window. Closing it hides it. GTK 4.22.5
 /// destroys a window's icon buffers a second time when the window is
 /// destroyed, which crashes the app, so no window here is ever destroyed.
+///
+/// The window belongs to the same application as its parent. A plain window's
+/// Wayland id is the binary name, and the panel then titles the global menu
+/// `elavo-system-settings`.
+///
+/// It also draws its own title bar. Without one, GTK asks labwc for the frame,
+/// and labwc drops that request when it arrives before the surface has a view.
+/// The window then opens with no border. A title bar is drawn on every open.
 pub fn popup_window(widget: &impl IsA<gtk::Widget>, title: &str) -> gtk::Window {
     let window = gtk::Window::builder()
         .title(title)
@@ -287,7 +295,11 @@ pub fn popup_window(widget: &impl IsA<gtk::Widget>, title: &str) -> gtk::Window 
         .build();
     if let Some(parent) = parent_window(widget) {
         window.set_transient_for(Some(&parent));
+        if let Some(app) = parent.application() {
+            window.set_application(Some(&app));
+        }
     }
+    window.set_titlebar(Some(&gtk::HeaderBar::new()));
     window
 }
 
@@ -313,6 +325,9 @@ pub async fn choose(
     }
     if let Some(parent) = parent_window(widget) {
         dialog.set_transient_for(Some(&parent));
+        if let Some(app) = parent.application() {
+            dialog.set_application(Some(&app));
+        }
     }
     for (i, label) in buttons.iter().enumerate() {
         dialog.add_button(label, gtk::ResponseType::Other(i as u16));
