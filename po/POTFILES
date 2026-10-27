@@ -5,6 +5,7 @@ src/backend/power.rs
 src/backend/updates.rs
 src/panes/about.rs
 src/panes/appearance.rs
+src/panes/applications.rs
 src/panes/bluetooth.rs
 src/panes/datetime.rs
 src/panes/displays.rs

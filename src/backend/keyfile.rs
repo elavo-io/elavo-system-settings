@@ -132,6 +132,51 @@ pub mod lens {
     }
 }
 
+/// `applications.conf`, read by the `elavo-applications` service each time
+/// something finishes installing.
+pub mod applications {
+    pub const FILE: &str = "applications.conf";
+    pub const GROUP: &str = "Install";
+    pub const KEY: &str = "AfterInstall";
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum AfterInstall {
+        Ask,
+        Open,
+        Nothing,
+    }
+
+    impl AfterInstall {
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Ask => "ask",
+                Self::Open => "open",
+                Self::Nothing => "nothing",
+            }
+        }
+
+        pub fn parse(s: &str) -> Self {
+            match s.trim().to_ascii_lowercase().as_str() {
+                "open" => Self::Open,
+                "nothing" => Self::Nothing,
+                _ => Self::Ask,
+            }
+        }
+    }
+
+    pub fn load() -> AfterInstall {
+        super::string(&super::load(FILE), GROUP, KEY)
+            .map(|s| AfterInstall::parse(&s))
+            .unwrap_or(AfterInstall::Ask)
+    }
+
+    pub fn save(value: AfterInstall) -> std::io::Result<()> {
+        let file = super::load(FILE);
+        file.set_string(GROUP, KEY, value.as_str());
+        super::save(FILE, &file)
+    }
+}
+
 /// `keyboard.conf`, read by `elavo-input`. Missing means on.
 pub mod keyboard {
     pub const FILE: &str = "keyboard.conf";
@@ -234,5 +279,16 @@ mod tests {
         assert_eq!(Applications::parse("folders"), Applications::Folders);
         assert_eq!(Applications::parse("anything"), Applications::Folders);
         assert_eq!(Applications::All.as_str(), "all");
+    }
+
+    #[test]
+    fn after_install_values() {
+        use applications::AfterInstall;
+        assert_eq!(AfterInstall::parse("open"), AfterInstall::Open);
+        assert_eq!(AfterInstall::parse("Nothing "), AfterInstall::Nothing);
+        assert_eq!(AfterInstall::parse("anything"), AfterInstall::Ask);
+        for v in [AfterInstall::Ask, AfterInstall::Open, AfterInstall::Nothing] {
+            assert_eq!(AfterInstall::parse(v.as_str()), v);
+        }
     }
 }

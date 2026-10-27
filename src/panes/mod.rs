@@ -8,6 +8,7 @@
 
 mod about;
 pub mod appearance;
+mod applications;
 mod bluetooth;
 mod datetime;
 mod displays;
@@ -318,6 +319,23 @@ pub fn all() -> Vec<Pane> {
             group: 0,
             parent: Some("general"),
             build: storage::build,
+        },
+        Pane {
+            id: "applications",
+            title: || tr("Applications"),
+            icon: "system-software-install-symbolic",
+            color: "graphite",
+            keywords: &[
+                "install",
+                "appimage",
+                "flatpak",
+                "open",
+                "launch",
+                "after install",
+            ],
+            group: 0,
+            parent: Some("general"),
+            build: applications::build,
         },
         Pane {
             id: "datetime",
