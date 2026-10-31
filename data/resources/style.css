@@ -15,8 +15,9 @@ headerbar.settings-sidebar-bar {
 }
 
 .settings-content-header {
-  min-height: 46px;
-  padding: 0 16px;
+  /* The same short inset above the capsule and beside the sidebar. The
+     title is centered on the capsule. */
+  padding: 8px;
   background-color: @theme_bg_color;
 }
 
@@ -172,6 +173,7 @@ headerbar.settings-sidebar-bar {
 
 .pane-title {
   font-weight: bold;
+  font-size: 17px;
 }
 
 .placeholder-pane {
