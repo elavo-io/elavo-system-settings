@@ -155,6 +155,7 @@ pub fn nav_row(
         content.append(
             &gtk::Image::builder()
                 .icon_name("go-next-symbolic")
+                .pixel_size(12)
                 .css_classes(["dim-label", "nav-chevron"])
                 .build(),
         );

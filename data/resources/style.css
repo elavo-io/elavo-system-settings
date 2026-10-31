@@ -5,6 +5,82 @@
   background-color: alpha(currentColor, 0.04);
 }
 
+/* The sidebar's top band. Same surface as the list, so the column reads as
+   one piece. The theme's header fill and its bottom rule would split it. */
+headerbar.settings-sidebar-bar {
+  background-color: alpha(currentColor, 0.04);
+  background-image: none;
+  border: none;
+  box-shadow: none;
+}
+
+.settings-content-header {
+  min-height: 46px;
+  padding: 0 16px;
+  background-color: @theme_bg_color;
+}
+
+/* Back and Forward: one capsule. The hairline stops short of the rim, and
+   each chevron sits in the middle of its half. A direction that cannot be
+   taken fades the glyph and leaves the capsule whole. */
+.settings-nav {
+  border-radius: 999px;
+  background-color: alpha(currentColor, 0.14);
+}
+
+.settings-nav > button {
+  min-width: 32px;
+  min-height: 32px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.settings-nav > button:first-child {
+  padding-left: 2px;
+  border-radius: 999px 0 0 999px;
+}
+
+.settings-nav > button:last-child {
+  padding-right: 2px;
+  border-radius: 0 999px 999px 0;
+}
+
+.settings-nav > button image {
+  margin: 0;
+}
+
+.settings-nav > button:hover {
+  background-color: alpha(currentColor, 0.06);
+}
+
+.settings-nav > button:active {
+  background-color: alpha(currentColor, 0.1);
+}
+
+.settings-nav > button:disabled,
+.settings-nav > button:disabled:hover,
+.settings-nav > button:disabled:active {
+  opacity: 1;
+  color: @theme_fg_color;
+  background: none;
+  -gtk-icon-filter: none;
+}
+
+.settings-nav > button:disabled image {
+  -gtk-icon-filter: opacity(0.58);
+}
+
+.settings-nav-rule {
+  min-width: 1px;
+  background-color: alpha(currentColor, 0.55);
+  margin-top: 7px;
+  margin-bottom: 7px;
+}
+
 .settings-sidebar entry.search {
   margin: 12px 10px 10px;
 }
@@ -255,7 +331,9 @@
 }
 
 .nav-chevron {
-  opacity: 0.45;
+  opacity: 0.4;
+  margin-left: 8px;
+  margin-right: 2px;
 }
 
 .storage-bar trough {
