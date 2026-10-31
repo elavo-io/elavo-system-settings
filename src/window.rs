@@ -439,15 +439,8 @@ impl Window {
         });
         self.window.add_controller(keys);
 
-        let weak = Rc::downgrade(self);
         self.window.connect_close_request(move |window| {
-            if let Some(w) = weak.upgrade() {
-                state::save(
-                    *w.current.borrow(),
-                    window.default_width(),
-                    window.default_height(),
-                );
-            }
+            state::save(window.default_width(), window.default_height());
             glib::Propagation::Proceed
         });
     }
@@ -546,13 +539,6 @@ impl Window {
             self.history.borrow_mut().push(current);
         }
         self.update_buttons();
-    }
-
-    pub fn show_initial(&self) {
-        let id = state::last_pane()
-            .filter(|id| self.has_pane(id))
-            .unwrap_or_else(|| panes::DEFAULT.to_owned());
-        self.show(&id);
     }
 
     pub fn focus_search(&self) {

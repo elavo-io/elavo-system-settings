@@ -227,6 +227,25 @@ fn add_actions(app: &gtk::Application) {
     app.add_action(&help);
 }
 
+/// Where a launch lands. A cold start opens General. A window that is
+/// already open stays on its page unless the command names one.
+enum Launch {
+    Pane(String),
+    Stay,
+}
+
+fn launch_target(
+    already_open: bool,
+    requested: Option<&str>,
+    known: impl Fn(&str) -> bool,
+) -> Launch {
+    match requested {
+        Some(id) if known(id) => Launch::Pane(id.to_owned()),
+        _ if !already_open => Launch::Pane(crate::panes::DEFAULT.to_owned()),
+        _ => Launch::Stay,
+    }
+}
+
 /// `--pane ID`, `--pane=ID`, or a bare ID.
 pub fn requested_pane(args: &[String]) -> Option<String> {
     let mut iter = args.iter().skip(1);
@@ -290,10 +309,13 @@ pub fn run() -> glib::ExitCode {
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
+        let already_open = WINDOW.with(|w| w.borrow().is_some());
         let w = window(app);
-        match requested_pane(&args) {
-            Some(id) if w.has_pane(&id) => w.show(&id),
-            _ => w.show_initial(),
+        match launch_target(already_open, requested_pane(&args).as_deref(), |id| {
+            w.has_pane(id)
+        }) {
+            Launch::Pane(id) => w.show(&id),
+            Launch::Stay => {}
         }
         w.window.present();
         glib::ExitCode::SUCCESS
@@ -326,5 +348,27 @@ mod tests {
             Some("about")
         );
         assert_eq!(requested_pane(&args(&["x", "--pane"])), None);
+    }
+
+    #[test]
+    fn cold_start_opens_general_and_a_running_window_stays() {
+        let known = |id: &str| id == "sound" || id == "general";
+        assert!(matches!(
+            launch_target(false, None, known),
+            Launch::Pane(id) if id == "general"
+        ));
+        assert!(matches!(launch_target(true, None, known), Launch::Stay));
+        assert!(matches!(
+            launch_target(true, Some("sound"), known),
+            Launch::Pane(id) if id == "sound"
+        ));
+        assert!(matches!(
+            launch_target(false, Some("missing"), known),
+            Launch::Pane(id) if id == "general"
+        ));
+        assert!(matches!(
+            launch_target(true, Some("missing"), known),
+            Launch::Stay
+        ));
     }
 }

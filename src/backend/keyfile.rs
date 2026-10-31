@@ -194,14 +194,11 @@ pub mod keyboard {
     }
 }
 
-/// This application's own state: the last pane and the window size.
+/// This application's own state: the window size. A launch with no pane
+/// opens General, so the last page is not kept.
 pub mod state {
     pub const FILE: &str = "system-settings.conf";
     pub const GROUP: &str = "Window";
-
-    pub fn last_pane() -> Option<String> {
-        super::string(&super::load(FILE), GROUP, "LastPane")
-    }
 
     pub fn size() -> Option<(i32, i32)> {
         let file = super::load(FILE);
@@ -210,9 +207,9 @@ pub mod state {
         Some((w.clamp(640, 4000) as i32, h.clamp(480, 4000) as i32))
     }
 
-    pub fn save(pane: &str, width: i32, height: i32) {
+    pub fn save(width: i32, height: i32) {
         let file = super::load(FILE);
-        file.set_string(GROUP, "LastPane", pane);
+        let _ = file.remove_key(GROUP, "LastPane");
         file.set_int64(GROUP, "Width", i64::from(width));
         file.set_int64(GROUP, "Height", i64::from(height));
         let _ = super::save(FILE, &file);
