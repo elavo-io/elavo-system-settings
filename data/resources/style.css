@@ -210,12 +210,20 @@ headerbar.settings-sidebar-bar {
 .appearance-thumb {
   border-radius: 6px;
   min-width: 120px;
-  min-height: 76px;
+  min-height: 90px;
   border: 1px solid alpha(black, 0.15);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: cover;
 }
 
-.appearance-thumb.light { background: linear-gradient(#f5f5f7, #e6e6ea); }
-.appearance-thumb.dark { background: linear-gradient(#3a3a3c, #1c1c1e); }
+.appearance-thumb.light {
+  background-image: url("light-mode.jpg");
+}
+
+.appearance-thumb.dark {
+  background-image: url("dark-mode.jpg");
+}
 
 .wallpaper-card {
   border-radius: 10px;
