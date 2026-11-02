@@ -7,6 +7,7 @@ use std::rc::Rc;
 use gtk::glib;
 use gtk::prelude::*;
 
+use crate::backend::keyfile::panel;
 use crate::backend::pulse::{Pulse, Snapshot, MAX_VOLUME};
 use crate::i18n::tr;
 use crate::widgets;
@@ -82,6 +83,15 @@ impl Pane {
             let has = !list.is_empty();
             side.volume.set_sensitive(has && !side.mute.is_active());
             side.mute.set_sensitive(has);
+        }
+
+        // The default can still be an AirPlay output from before it was
+        // hidden. Point it at a listed device so the slider is not driving
+        // one the list does not show.
+        if !s.sinks.iter().any(|d| d.name == s.default_sink) {
+            if let Some(device) = s.sinks.first() {
+                self.pulse.set_default_sink(&device.name);
+            }
         }
 
         if s.default_source != *self.peak_source.borrow() && self.root.is_mapped() {
@@ -300,6 +310,19 @@ pub fn build() -> gtk::Widget {
             widgets::row(&tr("Mute"), &output.mute),
         ],
     ));
+    let status = widgets::status_label();
+    let show_volume = gtk::CheckButton::new();
+    show_volume.set_active(panel::show_volume());
+    let volume_status = status.clone();
+    show_volume.connect_toggled(move |check| {
+        if let Err(err) = panel::set_show_volume(check.is_active()) {
+            widgets::set_status(&volume_status, &format!("{} {err}", tr("Could not save:")));
+        }
+    });
+    root.append(&widgets::group(
+        None,
+        &[widgets::row(&tr("Show Volume in Panel"), &show_volume)],
+    ));
     root.append(&widgets::group(
         Some(&tr("Input")),
         &[
@@ -318,7 +341,6 @@ pub fn build() -> gtk::Widget {
     let (frame, apps) = widgets::list();
     apps_box.append(&frame);
     root.append(&apps_box);
-    let status = widgets::status_label();
     root.append(&status);
 
     let pane = Rc::new(Pane {

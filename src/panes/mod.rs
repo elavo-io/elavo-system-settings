@@ -87,24 +87,6 @@ pub fn all() -> Vec<Pane> {
             parent: None,
             build: network::build_network,
         },
-        Pane {
-            id: "sound",
-            title: || tr("Sound"),
-            icon: "audio-volume-high-symbolic",
-            color: "pink",
-            keywords: &[
-                "volume",
-                "speaker",
-                "microphone",
-                "input",
-                "output",
-                "mute",
-                "audio",
-            ],
-            group: 1,
-            parent: None,
-            build: sound::build,
-        },
         // The system as a whole
         Pane {
             id: "general",
@@ -135,6 +117,24 @@ pub fn all() -> Vec<Pane> {
             group: 2,
             parent: None,
             build: lens::build,
+        },
+        Pane {
+            id: "sound",
+            title: || tr("Sound"),
+            icon: "audio-volume-high-symbolic",
+            color: "pink",
+            keywords: &[
+                "volume",
+                "speaker",
+                "microphone",
+                "input",
+                "output",
+                "mute",
+                "audio",
+            ],
+            group: 2,
+            parent: None,
+            build: sound::build,
         },
         // The desktop
         Pane {

@@ -194,6 +194,24 @@ pub mod keyboard {
     }
 }
 
+/// The panel's own file. `ShowVolume` is the volume icon in the bar.
+/// Missing means shown.
+pub mod panel {
+    pub const FILE: &str = "panel.conf";
+    pub const GROUP: &str = "Status";
+    pub const KEY: &str = "ShowVolume";
+
+    pub fn show_volume() -> bool {
+        super::load(FILE).boolean(GROUP, KEY).unwrap_or(true)
+    }
+
+    pub fn set_show_volume(on: bool) -> std::io::Result<()> {
+        let file = super::load(FILE);
+        file.set_boolean(GROUP, KEY, on);
+        super::save(FILE, &file)
+    }
+}
+
 /// This application's own state: the window size. A launch with no pane
 /// opens General, so the last page is not kept.
 pub mod state {

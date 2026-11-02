@@ -70,6 +70,12 @@ thread_local! {
     static PULSE: RefCell<Option<Rc<Pulse>>> = const { RefCell::new(None) };
 }
 
+/// PipeWire's AirPlay outputs. The receivers here refuse a stream from this
+/// sender, so Sound does not offer them.
+pub(crate) fn listed_output(name: &str) -> bool {
+    !name.starts_with("raop_sink.")
+}
+
 fn fraction(v: Volume) -> f64 {
     f64::from(v.0) / f64::from(Volume::NORMAL.0)
 }
@@ -336,13 +342,19 @@ fn refresh(ctx_ptr: *mut Context, shared: &Arc<Mutex<Snapshot>>, tx: &async_chan
     let mut sinks = Vec::new();
     let (s, t) = (shared.clone(), tx.clone());
     introspect.get_sink_info_list(move |item| match item {
-        ListResult::Item(info) => sinks.push(Device {
-            name: info.name.as_deref().unwrap_or("").to_owned(),
-            description: info.description.as_deref().unwrap_or("").to_owned(),
-            volume: fraction(info.volume.avg()),
-            muted: info.mute,
-            channels: info.volume.len(),
-        }),
+        ListResult::Item(info) => {
+            let name = info.name.as_deref().unwrap_or("");
+            if !listed_output(name) {
+                return;
+            }
+            sinks.push(Device {
+                name: name.to_owned(),
+                description: info.description.as_deref().unwrap_or("").to_owned(),
+                volume: fraction(info.volume.avg()),
+                muted: info.mute,
+                channels: info.volume.len(),
+            });
+        }
         ListResult::End | ListResult::Error => {
             if let Ok(mut snap) = s.lock() {
                 snap.sinks = std::mem::take(&mut sinks);
@@ -414,4 +426,17 @@ fn refresh(ctx_ptr: *mut Context, shared: &Arc<Mutex<Snapshot>>, tx: &async_chan
         }
         let _ = t.send_blocking(());
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn airplay_outputs_are_not_listed() {
+        assert!(!listed_output(
+            "raop_sink.Living-Room.local.192.168.1.169.7000"
+        ));
+        assert!(listed_output("alsa_output.pci-0000_00_1f.3.analog-stereo"));
+    }
 }
