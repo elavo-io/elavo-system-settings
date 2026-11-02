@@ -26,6 +26,10 @@ fn path<'a>(category: &'a str, key: &'a str) -> [Seg<'a>; 3] {
 /// the bottom-right corner is the other choice. A clickpad uses one method.
 const CLICK_FINGER: &str = "clickfinger";
 const CLICK_CORNER: &str = "buttonAreas";
+/// labwc `<accelProfile>`. Adaptive speeds the pointer up as the hand moves
+/// faster, which is pointer acceleration. Flat keeps a constant speed.
+const ACCEL_ON: &str = "adaptive";
+const ACCEL_OFF: &str = "flat";
 
 fn read(category: &str, key: &str) -> Option<String> {
     if category == "touchpad" && key == "clickMethod" {
@@ -73,6 +77,11 @@ fn read_bool(category: &str, key: &str, default: bool) -> bool {
     }
 }
 
+/// Missing, or anything other than flat, is acceleration on.
+fn acceleration_on(value: Option<&str>) -> bool {
+    !value.is_some_and(|v| v.eq_ignore_ascii_case(ACCEL_OFF))
+}
+
 fn read_speed(category: &str) -> f64 {
     read(category, "pointerSpeed")
         .and_then(|v| v.parse().ok())
@@ -91,9 +100,14 @@ fn keys(category: &str) -> &'static [(&'static str, &'static str)] {
             ("tap", "yes"),
             ("clickMethod", CLICK_FINGER),
             ("disableWhileTyping", "yes"),
+            ("accelProfile", ACCEL_ON),
         ]
     } else {
-        &[("pointerSpeed", "0.00"), ("naturalScroll", "yes")]
+        &[
+            ("pointerSpeed", "0.00"),
+            ("naturalScroll", "yes"),
+            ("accelProfile", ACCEL_ON),
+        ]
     }
 }
 
@@ -158,6 +172,25 @@ fn switch_row(
     row
 }
 
+fn accel_row(status: &gtk::Label, category: &'static str) -> gtk::ListBoxRow {
+    let (row, switch) = widgets::switch_row(
+        &tr("Pointer acceleration"),
+        Some(&tr("The pointer moves farther when you move faster.")),
+    );
+    switch.set_active(acceleration_on(read(category, "accelProfile").as_deref()));
+    let status = status.clone();
+    switch.connect_state_set(move |_, on| {
+        write(
+            &status,
+            category,
+            "accelProfile",
+            if on { ACCEL_ON } else { ACCEL_OFF }.to_owned(),
+        );
+        glib::Propagation::Proceed
+    });
+    row
+}
+
 fn secondary_click_row(status: &gtk::Label) -> gtk::ListBoxRow {
     let labels = [
         tr("Click with two fingers"),
@@ -181,6 +214,33 @@ fn secondary_click_row(status: &gtk::Label) -> gtk::ListBoxRow {
         Some(&tr("Right-click on the trackpad.")),
         &dropdown,
     )
+}
+
+fn advanced_button(anchor: &impl IsA<gtk::Widget>, category: &'static str) -> gtk::Button {
+    let button = gtk::Button::with_label(&tr("Advanced…"));
+    button.set_halign(gtk::Align::Start);
+    let anchor = anchor.clone();
+    let dialog: Rc<RefCell<Option<gtk::Window>>> = Rc::default();
+    button.connect_clicked(move |_| {
+        let existing = dialog.borrow().clone();
+        let window = existing.unwrap_or_else(|| {
+            let window = widgets::popup_window(&anchor, &tr("Advanced"));
+            window.set_default_width(380);
+            let page = widgets::page();
+            page.set_margin_top(12);
+            page.set_margin_bottom(12);
+            page.set_margin_start(12);
+            page.set_margin_end(12);
+            let status = widgets::status_label();
+            page.append(&widgets::group(None, &[accel_row(&status, category)]));
+            page.append(&status);
+            window.set_child(Some(&page));
+            dialog.replace(Some(window.clone()));
+            window
+        });
+        window.present();
+    });
+    button
 }
 
 fn has_touchpad() -> bool {
@@ -211,6 +271,7 @@ pub fn build_mouse() -> gtk::Widget {
             ),
         ],
     ));
+    page.append(&advanced_button(&page, "non-touch"));
     page.append(&status);
     page.upcast()
 }
@@ -252,6 +313,7 @@ pub fn build_trackpad() -> gtk::Widget {
             true,
         )],
     ));
+    page.append(&advanced_button(&page, "touchpad"));
     if !has_touchpad() {
         page.append(&widgets::caption(&tr(
             "No trackpad is connected. These settings apply when one is.",
@@ -280,6 +342,17 @@ mod tests {
         assert!(!keys("non-touch")
             .iter()
             .any(|(key, _)| *key == "clickMethod"));
+    }
+
+    #[test]
+    fn pointer_acceleration_is_on_unless_the_speed_is_constant() {
+        assert!(acceleration_on(None));
+        assert!(acceleration_on(Some("adaptive")));
+        assert!(acceleration_on(Some("ADAPTIVE")));
+        assert!(!acceleration_on(Some("flat")));
+        assert!(!acceleration_on(Some("Flat")));
+        assert!(keys("non-touch").contains(&("accelProfile", ACCEL_ON)));
+        assert!(keys("touchpad").contains(&("accelProfile", ACCEL_ON)));
     }
 
     #[test]
