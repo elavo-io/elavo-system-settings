@@ -13,6 +13,7 @@ mod bluetooth;
 mod datetime;
 mod displays;
 mod dock;
+mod drivers;
 mod general;
 mod keyboard;
 mod lens;

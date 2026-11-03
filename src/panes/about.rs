@@ -6,11 +6,10 @@ use std::rc::Rc;
 use gtk::prelude::*;
 use gtk::{gio, glib};
 
+use super::drivers;
 use crate::backend::{dbus, hostname, sysinfo};
 use crate::i18n::tr;
 use crate::widgets;
-
-const VERIFY_URL: &str = "https://github.com/elavo-io/elavo#elavo";
 
 fn version() -> String {
     let base = sysinfo::os_release("VERSION").unwrap_or_default();
@@ -182,20 +181,16 @@ pub fn build() -> gtk::Widget {
     let update = gtk::Button::with_label(&tr("Software Update…"));
     update.set_action_name(Some("app.show-pane"));
     update.set_action_target_value(Some(&"updates".to_variant()));
-    let verify = gtk::Button::with_label(&tr("Verify This System…"));
-    verify.connect_clicked(|b| {
-        let launcher = gtk::UriLauncher::new(VERIFY_URL);
-        launcher.launch(
-            widgets::parent_window(b).as_ref(),
-            gio::Cancellable::NONE,
-            |_| {},
-        );
-    });
     buttons.append(&update);
-    buttons.append(&verify);
+    let hardware = crate::backend::drivers::scan();
+    if !hardware.is_empty() {
+        buttons.append(&drivers::button());
+    }
     page.append(&buttons);
-    page.append(&widgets::caption(&tr(
-        "Elavo is free software built on Fedora. Every image is signed; Verify This System explains how to check yours.",
-    )));
+    if !hardware.is_empty() {
+        page.append(&widgets::caption(&tr(
+            "Some hardware on this computer needs a driver.",
+        )));
+    }
     page.upcast()
 }

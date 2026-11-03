@@ -93,6 +93,30 @@
     <annotate key="org.freedesktop.policykit.exec.argv1">lid</annotate>
   </action>
 
+  <action id="io.elavo.SystemSettings.wifi-driver">
+    <description>Turn on a hardware driver</description>
+    <message>Authentication is required to turn on a hardware driver.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">wifi-driver</annotate>
+  </action>
+
+  <action id="io.elavo.SystemSettings.switch-nvidia">
+    <description>Switch to the NVIDIA system image</description>
+    <message>Authentication is required to switch to the NVIDIA system image.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">switch-nvidia</annotate>
+  </action>
+
   <action id="io.elavo.SystemSettings.login-window">
     <description>Change what the login window shows</description>
     <message>Authentication is required to change what the login window shows.</message>

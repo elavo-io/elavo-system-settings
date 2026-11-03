@@ -15,6 +15,8 @@
 //! elavo-system-settings-helper rollback
 //! elavo-system-settings-helper lid suspend|lock|ignore|poweroff
 //! elavo-system-settings-helper login-window list|name
+//! elavo-system-settings-helper wifi-driver broadcom|brcmfmac
+//! elavo-system-settings-helper switch-nvidia
 //! ```
 //!
 //! `auto-run` is what `elavo-system-update.service` runs as root on a
@@ -24,6 +26,10 @@
 #[allow(dead_code)]
 #[path = "../backend/auto.rs"]
 mod auto;
+
+#[allow(dead_code)]
+#[path = "../backend/drivers.rs"]
+mod drivers;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::FromRawFd;
@@ -53,6 +59,17 @@ enum Command {
     Rollback,
     Lid(Lid),
     LoginWindow(LoginWindow),
+    /// Load Broadcom's `wl`, or turn on the built-in `brcmfmac` driver.
+    WifiDriver(WifiDriver),
+    /// `bootc switch` to `elavo-nvidia` on the same tag. Offered only after
+    /// that image is published.
+    SwitchNvidia,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WifiDriver {
+    Broadcom,
+    Brcmfmac,
 }
 
 /// What Folio's login window shows.
@@ -124,8 +141,29 @@ fn parse(args: &[String]) -> Result<Command, String> {
         ["lid", "poweroff"] => Ok(Command::Lid(Lid::Poweroff)),
         ["login-window", "list"] => Ok(Command::LoginWindow(LoginWindow::List)),
         ["login-window", "name"] => Ok(Command::LoginWindow(LoginWindow::Name)),
+        ["wifi-driver", "broadcom"] => Ok(Command::WifiDriver(WifiDriver::Broadcom)),
+        ["wifi-driver", "brcmfmac"] => Ok(Command::WifiDriver(WifiDriver::Brcmfmac)),
+        ["switch-nvidia"] => Ok(Command::SwitchNvidia),
         _ => Err(format!("unsupported command: {}", args.join(" "))),
     }
+}
+
+/// `ghcr.io/elavo-io/elavo:stable` to `ghcr.io/elavo-io/elavo-nvidia:stable`.
+/// Only the main image name `elavo` is rewritten, and the tag is kept.
+fn nvidia_target(image: &str) -> Option<String> {
+    let image = image.split('@').next()?;
+    let (repo, last) = image.rsplit_once('/')?;
+    let (name, tag) = match last.split_once(':') {
+        Some((name, tag)) => (name, Some(tag)),
+        None => (last, None),
+    };
+    if name != "elavo" {
+        return None;
+    }
+    Some(match tag {
+        Some(tag) => format!("{repo}/elavo-nvidia:{tag}"),
+        None => format!("{repo}/elavo-nvidia"),
+    })
 }
 
 /// Swap the tag of `image` for `tag`, dropping any digest:
@@ -304,6 +342,99 @@ fn write_atomically(dir: &str, path: &str, text: &str) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
+fn write_conf(path: &str, text: &str) -> Result<(), String> {
+    let dir = Path::new(path)
+        .parent()
+        .and_then(|dir| dir.to_str())
+        .ok_or("no directory")?;
+    write_atomically(dir, path, text)
+}
+
+fn modprobe(args: &[&str]) -> Result<String, String> {
+    let output = tool("modprobe")
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    let mut text = String::from_utf8_lossy(&output.stderr).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stdout));
+    if output.status.success() {
+        Ok(text)
+    } else {
+        Err(text)
+    }
+}
+
+fn module_missing(err: &str) -> bool {
+    err.to_ascii_lowercase().contains("not found")
+}
+
+fn module_refused(err: &str) -> bool {
+    let err = err.to_ascii_lowercase();
+    err.contains("key was rejected")
+        || err.contains("required key not available")
+        || err.contains("lockdown")
+        || err.contains("module verification failed")
+}
+
+/// A status word on stdout is what the wizard reads. `loaded` and `reboot`
+/// are success. `missing` and `refused` leave the disk unchanged.
+fn driver_status(status: &str) -> Result<(), String> {
+    println!("{status}");
+    match status {
+        "loaded" | "reboot" => Ok(()),
+        other => Err(other.to_owned()),
+    }
+}
+
+fn wifi_broadcom() -> Result<(), String> {
+    if let Err(err) = modprobe(&["--dry-run", "wl"]) {
+        if module_missing(&err) {
+            return driver_status("missing");
+        }
+    }
+    // Persist the blacklist only after the kernel has accepted the module,
+    // or when the card is busy and a restart is what finishes the job.
+    // A lockdown refusal must not leave the built-in driver blacklisted.
+    for module in ["brcmfmac", "brcmsmac", "b43", "b43legacy", "ssb", "bcma"] {
+        let _ = modprobe(&["-r", module]);
+    }
+    match modprobe(&["wl"]) {
+        Ok(_) => {
+            write_conf(drivers::WL_LOAD_PATH, drivers::wl_load_conf())?;
+            write_conf(drivers::WL_BLACKLIST_PATH, drivers::wl_blacklist_conf())?;
+            driver_status("loaded")
+        }
+        Err(err) if module_refused(&err) || module_missing(&err) => {
+            driver_status(if module_missing(&err) {
+                "missing"
+            } else {
+                "refused"
+            })
+        }
+        Err(_) => {
+            write_conf(drivers::WL_LOAD_PATH, drivers::wl_load_conf())?;
+            write_conf(drivers::WL_BLACKLIST_PATH, drivers::wl_blacklist_conf())?;
+            driver_status("reboot")
+        }
+    }
+}
+
+fn wifi_brcmfmac() -> Result<(), String> {
+    if drivers::needs_brcmfmac_option() {
+        write_conf(
+            drivers::BRCMFMAC_OPTION_PATH,
+            drivers::brcmfmac_option_conf(),
+        )?;
+        if modprobe(&["-r", "brcmfmac"]).is_err() {
+            return driver_status("reboot");
+        }
+    }
+    match modprobe(&["brcmfmac"]) {
+        Ok(_) => driver_status("loaded"),
+        Err(_) => driver_status("reboot"),
+    }
+}
+
 fn execute(command: Command) -> Result<(), String> {
     match command {
         Command::Upgrade => {
@@ -372,6 +503,25 @@ fn execute(command: Command) -> Result<(), String> {
             std::fs::write(&tmp, greeter_conf(show)).map_err(|e| e.to_string())?;
             std::fs::rename(&tmp, GREETER_CONF).map_err(|e| e.to_string())
         }
+        Command::WifiDriver(WifiDriver::Broadcom) => wifi_broadcom(),
+        Command::WifiDriver(WifiDriver::Brcmfmac) => wifi_brcmfmac(),
+        Command::SwitchNvidia => {
+            let current = booted()?;
+            let target = nvidia_target(&current.image).ok_or("the booted image is not elavo")?;
+            if target == current.image {
+                println!("Already on {target}");
+                return Ok(());
+            }
+            println!("Switching to {target}");
+            let mut p = tool("bootc");
+            p.args(["switch", "--transport", &current.transport]);
+            if current.signed {
+                p.arg("--enforce-container-sigpolicy");
+            }
+            let fds = attach_progress(&mut p)?;
+            p.arg(&target);
+            run_with_progress(p, fds)
+        }
     }
 }
 
@@ -439,6 +589,15 @@ mod tests {
             parse(&args(&["login-window", "name"])),
             Ok(Command::LoginWindow(LoginWindow::Name))
         );
+        assert_eq!(
+            parse(&args(&["wifi-driver", "broadcom"])),
+            Ok(Command::WifiDriver(WifiDriver::Broadcom))
+        );
+        assert_eq!(
+            parse(&args(&["wifi-driver", "brcmfmac"])),
+            Ok(Command::WifiDriver(WifiDriver::Brcmfmac))
+        );
+        assert_eq!(parse(&args(&["switch-nvidia"])), Ok(Command::SwitchNvidia));
     }
 
     #[test]
@@ -461,6 +620,10 @@ mod tests {
             &["login-window", "names"],
             &["login-window", "list\nShow=name"],
             &["upgrade", "--apply"],
+            &["wifi-driver"],
+            &["wifi-driver", "wl"],
+            &["wifi-driver", "broadcom", "extra"],
+            &["switch-nvidia", "elavo-nvidia"],
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }
@@ -484,6 +647,35 @@ mod tests {
             retag("elavo:latest", "stable").as_deref(),
             Some("elavo:stable")
         );
+    }
+
+    #[test]
+    fn nvidia_target_keeps_the_tag() {
+        assert_eq!(
+            nvidia_target("ghcr.io/elavo-io/elavo:stable").as_deref(),
+            Some("ghcr.io/elavo-io/elavo-nvidia:stable")
+        );
+        assert_eq!(
+            nvidia_target("ghcr.io/elavo-io/elavo:latest").as_deref(),
+            Some("ghcr.io/elavo-io/elavo-nvidia:latest")
+        );
+        assert_eq!(
+            nvidia_target("ghcr.io/elavo-io/elavo@sha256:abc").as_deref(),
+            Some("ghcr.io/elavo-io/elavo-nvidia")
+        );
+        assert_eq!(nvidia_target("ghcr.io/elavo-io/elavo-nvidia:stable"), None);
+        assert_eq!(nvidia_target("ghcr.io/elavo-io/other:stable"), None);
+    }
+
+    #[test]
+    fn a_refused_module_is_not_a_missing_one() {
+        assert!(module_missing("modprobe: FATAL: Module wl not found"));
+        assert!(!module_refused("modprobe: FATAL: Module wl not found"));
+        assert!(module_refused(
+            "Lockdown: modprobe: unsigned module loading is restricted"
+        ));
+        assert!(module_refused("Key was rejected by service"));
+        assert!(!module_missing("Device or resource busy"));
     }
 
     #[test]

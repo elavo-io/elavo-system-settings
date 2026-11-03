@@ -6,6 +6,7 @@ pub mod accounts;
 pub mod auto;
 pub mod bluetooth;
 pub mod dbus;
+pub mod drivers;
 pub mod greeter;
 pub mod gsettings;
 pub mod helper;
