@@ -499,6 +499,14 @@ impl Pane {
     }
 
     fn show_download(&self, got: updates::Download) {
+        // Once every byte is in, bootc is still unpacking and staging the
+        // image. Say so instead of sitting on a full bar.
+        if got.bytes >= got.bytes_total {
+            self.progress.set_visible(false);
+            self.spinner.set_visible(true);
+            self.state.set_label(&tr("Installing the update…"));
+            return;
+        }
         self.spinner.set_visible(false);
         self.progress.set_visible(true);
         self.state.set_label(&format!(

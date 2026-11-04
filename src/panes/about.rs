@@ -11,11 +11,11 @@ use crate::backend::{dbus, hostname, sysinfo};
 use crate::i18n::tr;
 use crate::widgets;
 
+/// The Elavo version only. The ostree build stamp (`44.2026…`) is left
+/// out: the Fedora version has its own row below.
 fn version() -> String {
-    let base = sysinfo::os_release("VERSION").unwrap_or_default();
-    match sysinfo::os_release("OSTREE_VERSION") {
-        Some(build) if !build.is_empty() => format!("{} {base} ({build})", tr("Version")),
-        _ if !base.is_empty() => format!("{} {base}", tr("Version")),
+    match sysinfo::os_release("VERSION") {
+        Some(base) if !base.is_empty() => format!("{} {base}", tr("Version")),
         _ => String::new(),
     }
 }
