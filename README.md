@@ -20,7 +20,7 @@ returns to it.
 | People | Lock Screen, Users & Groups |
 | Input | Keyboard, Mouse, Trackpad |
 
-General opens About, Software Update, Storage, and Date & Time. The card at
+General opens About, Software Update, Storage, Applications (including Default Apps), and Date & Time. The card at
 the top of the sidebar is the person logged in and opens Users & Groups.
 Battery is called Energy on a computer without one.
 
@@ -51,6 +51,7 @@ Settings… item uses `--pane dock`.
 | Keyboard layout | `~/.config/labwc/environment` |
 | Display arrangement | applied live, saved as a kanshi profile in `~/.config/kanshi/config` |
 | Dock | the dock's own settings, through `elavo-dock-settings` |
+| Default web browser | `~/.config/mimeapps.list` (GIO / xdg-open / portal OpenURI); browser keys are cleared from `~/.config/elavo-mimeapps.list` so a browser's own "make default" is respected |
 
 Only the user's labwc files are written; the image's files in
 `/etc/xdg/labwc` stay as they are and labwc merges the two.

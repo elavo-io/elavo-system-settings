@@ -11,6 +11,7 @@ pub mod appearance;
 mod applications;
 mod bluetooth;
 mod datetime;
+mod defaults;
 mod displays;
 mod dock;
 mod drivers;
@@ -341,6 +342,14 @@ pub fn all() -> Vec<Pane> {
                 "open",
                 "launch",
                 "after install",
+                "browser",
+                "web",
+                "default",
+                "default apps",
+                "mail",
+                "handlers",
+                "mime",
+                "open with",
             ],
             group: 0,
             parent: Some("general"),

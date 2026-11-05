@@ -1,10 +1,12 @@
-//! Applications: what happens when an app finishes installing from the
-//! Applications folder or a downloaded file. The `elavo-applications`
+//! Applications: the default apps for links and files, and what happens when
+//! an app finishes installing from the Applications folder or a downloaded
+//! file. The `elavo-applications`
 //! service reads `applications.conf` each time, and its "Don’t ask again"
 //! box writes the same key.
 
 use gtk::prelude::*;
 
+use super::defaults;
 use crate::backend::keyfile::applications::{self, AfterInstall};
 use crate::i18n::tr;
 use crate::widgets;
@@ -59,6 +61,7 @@ pub fn build() -> gtk::Widget {
     };
     sync();
     page.connect_map(move |_| sync());
+    defaults::append_to(&page);
     page.append(&widgets::group(
         Some(&tr("After an App Installs")),
         &[ask_row, open_row, nothing_row],
