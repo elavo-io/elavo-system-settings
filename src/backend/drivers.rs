@@ -1,6 +1,7 @@
 //! Hardware the Drivers wizard can see. Read from sysfs. Nothing here loads
 //! a module or writes a file; the helper does that.
 
+use std::cell::Cell;
 use std::path::Path;
 
 /// `elavo-nvidia` is specified and not published. The wizard explains it
@@ -198,10 +199,309 @@ pub fn brcmfmac_option_conf() -> &'static str {
      options brcmfmac feature_disable=0x82000\n"
 }
 
-/// The chips on this computer, and whether NVIDIA's module is loaded.
+/// Broadcom's license, shipped with the driver. The wizard shows this file
+/// and does not replace it with text of its own.
+pub const BROADCOM_LICENSE: &str = "/usr/share/licenses/broadcom-wl/LICENSE.txt";
+
+/// Opt-in only. Unset means the live computer. A name that is not one of
+/// the scenarios below is rejected, and nothing then falls through to a
+/// real driver change.
+pub const SIMULATE_ENV: &str = "ELAVO_SETTINGS_SIMULATE_DRIVERS";
+
+/// What a setup operation finished as. `Ready` is only a working wireless
+/// interface. `Failed` is everything else, including a partial change, so
+/// the wizard must not describe it as unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SetupOutcome {
+    Ready,
+    Restart,
+    Missing,
+    Blocked,
+    Failed(String),
+    /// Nothing to install. Explanations only.
+    Explained,
+}
+
+/// How the Wi-Fi pane should talk about a missing device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WifiBanner {
+    None,
+    /// Proprietary or built-in driver, with a Set Up action.
+    Available(Gap),
+    /// Firmware that is not in the image. No install action.
+    Firmware(WifiChip),
+    /// The simulation name was not recognized.
+    Rejected,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scenario {
+    /// BCM4360, then a verified wireless interface.
+    Proprietary,
+    /// BCM43602, including its module option, then a verified interface.
+    BuiltIn,
+    /// BCM4364. Explanation only.
+    Firmware,
+    /// No gap, and a Wi-Fi device is already present.
+    None,
+    /// Same detection as `Proprietary`, named for the success result.
+    Ready,
+    Restart,
+    Missing,
+    Blocked,
+    Failed,
+    /// A proprietary Wi-Fi chip, NVIDIA graphics, and an Apple T2.
+    Several,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Live,
+    Scenario(Scenario),
+    Rejected,
+}
+
+impl Mode {
+    /// Live setup, reboot, and NetworkManager changes. Simulation never
+    /// allows them, and neither does an unknown scenario name.
+    pub fn allows_system_changes(self) -> bool {
+        matches!(self, Mode::Live)
+    }
+}
+
+impl Scenario {
+    fn gaps(self) -> Vec<Gap> {
+        let wifi = |id: &str| {
+            Gap::Wifi(WifiChip {
+                id: id.to_owned(),
+                name: chip_name(id),
+                kind: wifi_kind(id).expect("scenario chip"),
+            })
+        };
+        match self {
+            Scenario::Proprietary
+            | Scenario::Ready
+            | Scenario::Restart
+            | Scenario::Missing
+            | Scenario::Blocked
+            | Scenario::Failed => vec![wifi("43a0")],
+            Scenario::BuiltIn => vec![wifi("43ba")],
+            Scenario::Firmware => vec![wifi("4464")],
+            Scenario::None => Vec::new(),
+            Scenario::Several => vec![wifi("43a0"), Gap::Nvidia, Gap::T2],
+        }
+    }
+
+    fn wifi_device_present(self) -> bool {
+        matches!(self, Scenario::None)
+    }
+
+    fn outcome(self, gap: &Gap) -> SetupOutcome {
+        let actionable = matches!(
+            gap,
+            Gap::Wifi(WifiChip {
+                kind: WifiKind::Proprietary | WifiKind::BuiltIn,
+                ..
+            })
+        );
+        if !actionable {
+            return SetupOutcome::Explained;
+        }
+        match self {
+            Scenario::Restart => SetupOutcome::Restart,
+            Scenario::Missing => SetupOutcome::Missing,
+            Scenario::Blocked => SetupOutcome::Blocked,
+            Scenario::Failed => SetupOutcome::Failed("The driver was not turned on.".to_owned()),
+            Scenario::Firmware | Scenario::None => SetupOutcome::Explained,
+            Scenario::Proprietary | Scenario::BuiltIn | Scenario::Ready | Scenario::Several => {
+                SetupOutcome::Ready
+            }
+        }
+    }
+}
+
+pub fn mode_from(value: Option<&str>) -> Mode {
+    match value {
+        None => Mode::Live,
+        Some(name) => parse_scenario(name)
+            .map(Mode::Scenario)
+            .unwrap_or(Mode::Rejected),
+    }
+}
+
+pub fn mode() -> Mode {
+    match std::env::var(SIMULATE_ENV) {
+        Err(_) => Mode::Live,
+        Ok(value) => mode_from(Some(value.trim())),
+    }
+}
+
+fn parse_scenario(name: &str) -> Option<Scenario> {
+    Some(match name {
+        "proprietary" => Scenario::Proprietary,
+        "builtin" => Scenario::BuiltIn,
+        "firmware" => Scenario::Firmware,
+        "none" => Scenario::None,
+        "ready" => Scenario::Ready,
+        "restart" => Scenario::Restart,
+        "missing" => Scenario::Missing,
+        "blocked" => Scenario::Blocked,
+        "failed" => Scenario::Failed,
+        "several" => Scenario::Several,
+        _ => return None,
+    })
+}
+
+/// The chips to show. A simulation never reads this computer's PCI bus.
+/// An unknown scenario shows nothing rather than the live hardware.
 pub fn scan() -> Vec<Gap> {
-    let nvidia = Path::new("/sys/module/nvidia").exists();
-    gaps(&pci_devices(), nvidia)
+    match mode() {
+        Mode::Live => {
+            let nvidia = Path::new("/sys/module/nvidia").exists();
+            gaps(&pci_devices(), nvidia)
+        }
+        Mode::Scenario(scenario) => scenario.gaps(),
+        Mode::Rejected => Vec::new(),
+    }
+}
+
+/// `None` only in live mode, where the caller may run the helper. Every
+/// other mode returns an outcome and must not touch the system.
+pub fn simulated_setup(gap: &Gap) -> Option<SetupOutcome> {
+    match mode() {
+        Mode::Live => None,
+        other => Some(setup_for(other, gap)),
+    }
+}
+
+fn setup_for(mode: Mode, gap: &Gap) -> SetupOutcome {
+    match mode {
+        Mode::Live => SetupOutcome::Failed(String::new()),
+        Mode::Rejected => SetupOutcome::Failed(
+            "This simulation name is not recognized, so nothing will change.".to_owned(),
+        ),
+        Mode::Scenario(scenario) => scenario.outcome(gap),
+    }
+}
+
+/// Map a helper status word. `verified` is a wireless interface seen after
+/// the module loaded. Without that, `loaded` is a restart, not success.
+pub fn outcome_from_status(status: &str, verified: bool, error: Option<&str>) -> SetupOutcome {
+    match status {
+        "missing" => SetupOutcome::Missing,
+        "refused" => SetupOutcome::Blocked,
+        "reboot" => SetupOutcome::Restart,
+        "loaded" if verified => SetupOutcome::Ready,
+        "loaded" => SetupOutcome::Restart,
+        _ => {
+            let detail = error.filter(|text| !text.is_empty()).map(str::to_owned);
+            SetupOutcome::Failed(
+                detail.unwrap_or_else(|| "The driver was not turned on.".to_owned()),
+            )
+        }
+    }
+}
+
+pub fn wifi_banner(nm_has_wifi: bool) -> WifiBanner {
+    wifi_banner_for(mode(), nm_has_wifi)
+}
+
+thread_local! {
+    /// A simulated setup that verified Wi-Fi. The notice then leaves, the
+    /// same way it leaves once NetworkManager sees a device.
+    static SIMULATED_WIFI_READY: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Remember a simulated, verified Wi-Fi result so the notice can refresh.
+pub fn mark_simulated_wifi_ready() {
+    SIMULATED_WIFI_READY.with(|ready| ready.set(true));
+}
+
+fn wifi_banner_for(mode: Mode, nm_has_wifi: bool) -> WifiBanner {
+    match mode {
+        Mode::Rejected => WifiBanner::Rejected,
+        Mode::Live => {
+            if nm_has_wifi {
+                return WifiBanner::None;
+            }
+            let nvidia = Path::new("/sys/module/nvidia").exists();
+            banner_from(&gaps(&pci_devices(), nvidia))
+        }
+        Mode::Scenario(scenario) => {
+            let ready = SIMULATED_WIFI_READY.with(|ready| ready.get());
+            if scenario.wifi_device_present() || ready {
+                return WifiBanner::None;
+            }
+            banner_from(&scenario.gaps())
+        }
+    }
+}
+
+fn banner_from(found: &[Gap]) -> WifiBanner {
+    if let Some(gap) = found.iter().find(|gap| gap.is_actionable_wifi()).cloned() {
+        return WifiBanner::Available(gap);
+    }
+    if let Some(Gap::Wifi(chip)) = found
+        .iter()
+        .find(|gap| matches!(gap, Gap::Wifi(chip) if chip.kind == WifiKind::Firmware))
+    {
+        return WifiBanner::Firmware(chip.clone());
+    }
+    WifiBanner::None
+}
+
+impl Gap {
+    /// A Wi-Fi driver this image can turn on. Firmware is not one of these.
+    pub fn is_actionable_wifi(&self) -> bool {
+        matches!(
+            self,
+            Gap::Wifi(WifiChip {
+                kind: WifiKind::Proprietary | WifiKind::BuiltIn,
+                ..
+            })
+        )
+    }
+
+    /// The as-is disclosure is only for Broadcom's proprietary driver.
+    pub fn shows_as_is_disclosure(&self) -> bool {
+        matches!(
+            self,
+            Gap::Wifi(WifiChip {
+                kind: WifiKind::Proprietary,
+                ..
+            })
+        )
+    }
+}
+
+/// The license file's own text, or `None` when it is missing or empty.
+/// Nothing is substituted.
+pub fn license_text_at(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+pub fn license_text() -> Option<String> {
+    license_text_at(Path::new(BROADCOM_LICENSE))
+}
+
+thread_local! {
+    static ON_CHANGE: std::cell::RefCell<Option<Box<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The Wi-Fi pane asks to be told when a setup finishes, so its notice can
+/// leave once a device appears.
+pub fn on_driver_change(update: impl Fn() + 'static) {
+    ON_CHANGE.with(|slot| *slot.borrow_mut() = Some(Box::new(update)));
+}
+
+pub fn notify_driver_change() {
+    ON_CHANGE.with(|slot| {
+        if let Some(update) = slot.borrow().as_ref() {
+            update();
+        }
+    });
 }
 
 pub fn chip_is_wireless(id: &str) -> bool {
@@ -371,5 +671,182 @@ mod tests {
         }
         assert!(!wl_blacklist_conf().contains("install wl"));
         assert!(brcmfmac_option_conf().contains("options brcmfmac feature_disable=0x82000\n"));
+    }
+
+    fn chip(id: &str) -> Gap {
+        Gap::Wifi(WifiChip {
+            id: id.to_owned(),
+            name: chip_name(id),
+            kind: wifi_kind(id).unwrap(),
+        })
+    }
+
+    #[test]
+    fn an_unset_simulation_is_live_and_an_unknown_name_is_rejected() {
+        assert_eq!(mode_from(None), Mode::Live);
+        assert!(mode_from(None).allows_system_changes());
+        assert_eq!(mode_from(Some("")), Mode::Rejected);
+        assert_eq!(mode_from(Some("nope")), Mode::Rejected);
+        assert!(!Mode::Rejected.allows_system_changes());
+    }
+
+    #[test]
+    fn every_named_scenario_blocks_live_changes() {
+        for name in [
+            "proprietary",
+            "builtin",
+            "firmware",
+            "none",
+            "ready",
+            "restart",
+            "missing",
+            "blocked",
+            "failed",
+            "several",
+        ] {
+            let mode = mode_from(Some(name));
+            assert!(matches!(mode, Mode::Scenario(_)), "{name}");
+            assert!(!mode.allows_system_changes(), "{name}");
+            let Mode::Scenario(scenario) = mode else {
+                continue;
+            };
+            let found = scenario.gaps();
+            assert!(simulated_setup_is_closed(mode, &found));
+        }
+    }
+
+    fn simulated_setup_is_closed(mode: Mode, found: &[Gap]) -> bool {
+        if found.is_empty() {
+            return setup_for(mode, &chip("43a0")) != SetupOutcome::Failed(String::new());
+        }
+        found.iter().all(|gap| {
+            let outcome = setup_for(mode, gap);
+            !matches!(outcome, SetupOutcome::Failed(text) if text.is_empty())
+        })
+    }
+
+    #[test]
+    fn a_rejected_simulation_never_asks_for_a_live_setup() {
+        let outcome = setup_for(Mode::Rejected, &chip("43a0"));
+        assert!(matches!(outcome, SetupOutcome::Failed(text) if text.contains("not recognized")));
+    }
+
+    #[test]
+    fn scenarios_detect_the_hardware_they_name() {
+        assert_eq!(Scenario::Proprietary.gaps(), vec![chip("43a0")]);
+        assert!(Scenario::Proprietary.gaps()[0].is_actionable_wifi());
+        assert!(Scenario::Proprietary.gaps()[0].shows_as_is_disclosure());
+        assert!(!Scenario::BuiltIn.gaps()[0].shows_as_is_disclosure());
+        assert!(!Scenario::Firmware.gaps()[0].shows_as_is_disclosure());
+        let builtin = Scenario::BuiltIn.gaps();
+        match &builtin[0] {
+            Gap::Wifi(found) => {
+                assert_eq!(found.kind, WifiKind::BuiltIn);
+                assert!(found.needs_option());
+            }
+            other => panic!("{other:?}"),
+        }
+        match &Scenario::Firmware.gaps()[0] {
+            Gap::Wifi(found) => assert_eq!(found.kind, WifiKind::Firmware),
+            other => panic!("{other:?}"),
+        }
+        assert!(Scenario::None.gaps().is_empty());
+        assert_eq!(Scenario::Several.gaps().len(), 3);
+    }
+
+    #[test]
+    fn the_banner_follows_the_gap_and_ignores_live_wifi_while_simulating() {
+        assert!(matches!(
+            wifi_banner_for(Mode::Scenario(Scenario::Proprietary), true),
+            WifiBanner::Available(_)
+        ));
+        assert!(matches!(
+            wifi_banner_for(Mode::Scenario(Scenario::BuiltIn), false),
+            WifiBanner::Available(_)
+        ));
+        assert!(matches!(
+            wifi_banner_for(Mode::Scenario(Scenario::Firmware), false),
+            WifiBanner::Firmware(_)
+        ));
+        assert_eq!(
+            wifi_banner_for(Mode::Scenario(Scenario::None), false),
+            WifiBanner::None
+        );
+        assert_eq!(wifi_banner_for(Mode::Rejected, false), WifiBanner::Rejected);
+        assert_eq!(wifi_banner_for(Mode::Live, true), WifiBanner::None);
+        mark_simulated_wifi_ready();
+        assert_eq!(
+            wifi_banner_for(Mode::Scenario(Scenario::Proprietary), false),
+            WifiBanner::None
+        );
+        SIMULATED_WIFI_READY.with(|ready| ready.set(false));
+        assert!(matches!(
+            wifi_banner_for(Mode::Scenario(Scenario::Restart), true),
+            WifiBanner::Available(_)
+        ));
+        assert_eq!(banner_from(&[]), WifiBanner::None);
+        assert!(matches!(
+            banner_from(&[chip("43a0")]),
+            WifiBanner::Available(_)
+        ));
+    }
+
+    #[test]
+    fn setup_results_match_the_scenario_and_success_needs_a_wireless_interface() {
+        let wifi = chip("43a0");
+        assert_eq!(Scenario::Ready.outcome(&wifi), SetupOutcome::Ready);
+        assert_eq!(Scenario::Restart.outcome(&wifi), SetupOutcome::Restart);
+        assert_eq!(Scenario::Missing.outcome(&wifi), SetupOutcome::Missing);
+        assert_eq!(Scenario::Blocked.outcome(&wifi), SetupOutcome::Blocked);
+        match Scenario::Failed.outcome(&wifi) {
+            SetupOutcome::Failed(text) => {
+                assert!(!text.to_lowercase().contains("nothing was changed"))
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            Scenario::Firmware.outcome(&chip("4464")),
+            SetupOutcome::Explained
+        );
+        assert_eq!(
+            outcome_from_status("loaded", true, None),
+            SetupOutcome::Ready
+        );
+        assert_eq!(
+            outcome_from_status("loaded", false, None),
+            SetupOutcome::Restart
+        );
+        assert_eq!(
+            outcome_from_status("missing", false, Some("missing")),
+            SetupOutcome::Missing
+        );
+        assert_eq!(
+            outcome_from_status("refused", false, Some("refused")),
+            SetupOutcome::Blocked
+        );
+        assert_eq!(
+            outcome_from_status("reboot", false, None),
+            SetupOutcome::Restart
+        );
+        match outcome_from_status("", false, Some("modprobe: busy")) {
+            SetupOutcome::Failed(text) => {
+                assert!(text.contains("modprobe: busy"));
+                assert!(!text.to_lowercase().contains("nothing was changed"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_missing_license_file_is_not_replaced() {
+        assert!(license_text_at(Path::new("/no/such/broadcom-wl-license.txt")).is_none());
+        let path = std::env::temp_dir().join("elavo-license-read-test.txt");
+        std::fs::write(&path, "notice stays with the file\n").unwrap();
+        assert_eq!(
+            license_text_at(&path).as_deref(),
+            Some("notice stays with the file")
+        );
+        let _ = std::fs::remove_file(&path);
+        assert!(license_text_at(Path::new("/no/such/empty")).is_none());
     }
 }

@@ -367,3 +367,28 @@ headerbar.settings-sidebar-bar {
 .signal-strength {
   opacity: 0.7;
 }
+
+.driver-notice {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background-color: alpha(currentColor, 0.06);
+}
+
+.driver-steps {
+  background-color: alpha(currentColor, 0.04);
+  border-radius: 12px;
+  padding: 4px;
+}
+
+.driver-steps row {
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+
+.driver-steps row.current {
+  background-color: alpha(currentColor, 0.08);
+}
+
+.driver-step-current {
+  font-weight: 700;
+}

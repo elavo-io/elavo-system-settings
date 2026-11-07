@@ -9,6 +9,7 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 
 use crate::backend::dbus::Debounce;
+use crate::backend::drivers;
 use crate::backend::network::{self, AccessPoint, Overview, Security};
 use crate::i18n::tr;
 use crate::widgets;
@@ -18,6 +19,7 @@ struct Pane {
     root: gtk::Box,
     wifi_mode: bool,
     wifi_box: gtk::Box,
+    notice: gtk::Box,
     wifi: gtk::Switch,
     current: gtk::ListBox,
     nearby: gtk::ListBox,
@@ -105,6 +107,7 @@ impl Pane {
         self.syncing.set(false);
 
         let wifi = o.devices.iter().find(|d| d.is_wifi());
+        self.render_driver_notice(wifi.is_none());
         self.wifi.set_sensitive(wifi.is_some());
         widgets::clear(&self.current);
         widgets::clear(&self.nearby);
@@ -136,6 +139,9 @@ impl Pane {
                         let path = path.clone();
                         let b = b.clone();
                         glib::spawn_future_local(async move {
+                            if !drivers::mode().allows_system_changes() {
+                                return;
+                            }
                             if let Err(e) = network::disconnect(&this.conn, &path).await {
                                 widgets::show_error(
                                     &b,
@@ -238,6 +244,10 @@ impl Pane {
                 let path = path.clone();
                 let sw = sw.clone();
                 glib::spawn_future_local(async move {
+                    if !drivers::mode().allows_system_changes() {
+                        this.refresh();
+                        return;
+                    }
                     if let Err(e) = network::set_autoconnect(&this.conn, &path, on).await {
                         widgets::show_error(
                             &sw,
@@ -264,6 +274,9 @@ impl Pane {
                 let name = name.clone();
                 let b = b.clone();
                 glib::spawn_future_local(async move {
+                    if !drivers::mode().allows_system_changes() {
+                        return;
+                    }
                     let ok = widgets::confirm(
                         &b,
                         &format!("{} “{name}”?", tr("Forget")),
@@ -288,7 +301,50 @@ impl Pane {
             .set_visible(self.wifi_mode && self.saved.first_child().is_some());
     }
 
+    /// Shown only on the Wi-Fi pane, and only when NetworkManager has no
+    /// Wi-Fi device. A simulation ignores the live device so the notice can
+    /// be checked on a computer whose Wi-Fi already works.
+    fn render_driver_notice(&self, nm_has_no_wifi: bool) {
+        while let Some(child) = self.notice.first_child() {
+            self.notice.remove(&child);
+        }
+        if !self.wifi_mode {
+            self.notice.set_visible(false);
+            return;
+        }
+        match drivers::wifi_banner(!nm_has_no_wifi) {
+            drivers::WifiBanner::None => self.notice.set_visible(false),
+            drivers::WifiBanner::Rejected => {
+                self.notice.append(&notice_label(&tr(
+                    "This simulation name isn't recognized, so nothing will change.",
+                )));
+                self.notice.set_visible(true);
+            }
+            drivers::WifiBanner::Firmware(_) => {
+                self.notice
+                    .append(&notice_label(&super::drivers::firmware_explanation()));
+                self.notice.set_visible(true);
+            }
+            drivers::WifiBanner::Available(gap) => {
+                self.notice.append(&notice_label(&tr(
+                    "A Wi-Fi driver is available for this computer.",
+                )));
+                let setup = gtk::Button::with_label(&tr("Set Up"));
+                setup.add_css_class("suggested-action");
+                setup.set_halign(gtk::Align::Start);
+                setup.connect_clicked(move |button| {
+                    super::drivers::open(button, Some(gap.clone()));
+                });
+                self.notice.append(&setup);
+                self.notice.set_visible(true);
+            }
+        }
+    }
+
     fn join(self: &Rc<Self>, button: &gtk::Button, ap: &AccessPoint) {
+        if !drivers::mode().allows_system_changes() {
+            return;
+        }
         let Some(device) = self.wifi_device() else {
             return;
         };
@@ -353,6 +409,15 @@ impl Pane {
     }
 }
 
+fn notice_label(text: &str) -> gtk::Label {
+    gtk::Label::builder()
+        .label(text)
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::Word)
+        .xalign(0.0)
+        .build()
+}
+
 fn section(title: &str) -> (gtk::Box, gtk::ListBox) {
     let outer = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -391,6 +456,13 @@ fn build(wifi_mode: bool) -> gtk::Widget {
         .orientation(gtk::Orientation::Vertical)
         .spacing(12)
         .build();
+    let notice = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .css_classes(["driver-notice"])
+        .visible(false)
+        .build();
+    wifi_box.append(&notice);
     let (wifi_frame, wifi_list) = widgets::list();
     wifi_box.append(&wifi_frame);
     wifi_list.append(&widgets::row(&tr("Wi-Fi"), &wifi));
@@ -434,6 +506,7 @@ fn build(wifi_mode: bool) -> gtk::Widget {
         root: root.clone(),
         wifi_mode,
         wifi_box: wifi_box.clone(),
+        notice,
         wifi,
         current,
         nearby,
@@ -457,6 +530,10 @@ fn build(wifi_mode: bool) -> gtk::Widget {
         let p = p.clone();
         let sw = sw.clone();
         glib::spawn_future_local(async move {
+            if !drivers::mode().allows_system_changes() {
+                p.refresh();
+                return;
+            }
             if let Err(e) = network::set_wifi_enabled(&p.conn, on).await {
                 widgets::show_error(
                     &sw,
@@ -470,6 +547,9 @@ fn build(wifi_mode: bool) -> gtk::Widget {
     });
     let p = pane.clone();
     scan.connect_clicked(move |_| {
+        if !drivers::mode().allows_system_changes() {
+            return;
+        }
         if let Some(d) = p.wifi_device() {
             let p = p.clone();
             glib::spawn_future_local(async move { network::scan(&p.conn, &d.path).await });
@@ -484,11 +564,22 @@ fn build(wifi_mode: bool) -> gtk::Widget {
         }
     });
     pane._subs.replace(subs);
+    {
+        let weak = Rc::downgrade(&pane);
+        drivers::on_driver_change(move || {
+            if let Some(pane) = weak.upgrade() {
+                pane.refresh();
+            }
+        });
+    }
     pane.refresh();
     // Scan each time the pane is shown; NetworkManager rate-limits scans.
     let weak = Rc::downgrade(&pane);
     root.connect_map(move |_| {
         if !wifi_mode {
+            return;
+        }
+        if !drivers::mode().allows_system_changes() {
             return;
         }
         if let Some(d) = weak.upgrade().and_then(|p| p.wifi_device().map(|d| (p, d))) {
