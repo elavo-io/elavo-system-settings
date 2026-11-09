@@ -241,7 +241,7 @@ impl Window {
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(["navigation-sidebar"])
             .build();
-        let top: Vec<&Pane> = panes.iter().filter(|p| p.parent.is_none()).collect();
+        let top: Vec<&Pane> = panes.iter().filter(|p| panes::listed(p)).collect();
         let sidebar_ids: Vec<&'static str> = top.iter().map(|p| p.id).collect();
         let rows: Vec<gtk::ListBoxRow> = top.iter().map(|p| sidebar_row(p)).collect();
         for row in &rows {

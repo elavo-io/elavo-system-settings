@@ -27,6 +27,7 @@ mod power;
 mod sound;
 mod storage;
 mod switcher;
+mod touchscreen;
 mod updates;
 mod users;
 mod wallpaper;
@@ -47,6 +48,12 @@ pub struct Pane {
     /// The hub page this pane opens from, instead of the sidebar.
     pub parent: Option<&'static str>,
     pub build: fn() -> gtk::Widget,
+}
+
+/// Sidebar and View menu entries. Touchscreen controls is listed only
+/// while a touchscreen is connected.
+pub fn listed(pane: &Pane) -> bool {
+    pane.parent.is_none() && (pane.id != "touchscreen" || touchscreen::present())
 }
 
 pub fn all() -> Vec<Pane> {
@@ -289,6 +296,23 @@ pub fn all() -> Vec<Pane> {
             group: 5,
             parent: None,
             build: mouse::build_trackpad,
+        },
+        Pane {
+            id: "touchscreen",
+            title: || tr("Touchscreen controls"),
+            icon: "input-tablet-symbolic",
+            color: "graphite",
+            keywords: &[
+                "touch",
+                "touchscreen",
+                "finger",
+                "window buttons",
+                "enlarged",
+                "close",
+            ],
+            group: 5,
+            parent: None,
+            build: touchscreen::build,
         },
         // Opened from General
         Pane {

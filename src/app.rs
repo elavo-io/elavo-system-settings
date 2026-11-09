@@ -297,7 +297,7 @@ pub fn run() -> glib::ExitCode {
         add_actions(app);
         let panes: Vec<(&'static str, String)> = crate::panes::all()
             .iter()
-            .filter(|p| p.parent.is_none())
+            .filter(|p| crate::panes::listed(p))
             .map(|p| (p.id, (p.title)()))
             .collect();
         app.set_menubar(Some(&menubar(&panes)));

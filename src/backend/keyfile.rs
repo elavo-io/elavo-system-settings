@@ -212,6 +212,24 @@ pub mod panel {
     }
 }
 
+/// `touch.conf`, read by labwc on the next finger tap. Missing means the
+/// enlarged window buttons are on.
+pub mod touch {
+    pub const FILE: &str = "touch.conf";
+    pub const GROUP: &str = "Touchscreen";
+    pub const KEY: &str = "EnlargedWindowButtons";
+
+    pub fn enlarged_buttons() -> bool {
+        super::load(FILE).boolean(GROUP, KEY).unwrap_or(true)
+    }
+
+    pub fn set_enlarged_buttons(on: bool) -> std::io::Result<()> {
+        let file = super::load(FILE);
+        file.set_boolean(GROUP, KEY, on);
+        super::save(FILE, &file)
+    }
+}
+
 /// This application's own state: the window size. A launch with no pane
 /// opens General, so the last page is not kept.
 pub mod state {
@@ -265,6 +283,20 @@ mod tests {
         let file = glib::KeyFile::new();
         file.set_int64(idle::GROUP, "LockAfter", -5);
         assert_eq!(idle::parse(&file).lock_after, idle::DEFAULT_LOCK);
+    }
+
+    #[test]
+    fn enlarged_buttons_default_on_and_round_trip() {
+        let file = glib::KeyFile::new();
+        assert!(file.boolean(touch::GROUP, touch::KEY).is_err());
+        file.set_boolean(touch::GROUP, touch::KEY, false);
+        let text = file.to_data();
+        assert!(text.contains("[Touchscreen]"));
+        assert!(text.contains("EnlargedWindowButtons=false"));
+        let back = glib::KeyFile::new();
+        back.load_from_data(&text, glib::KeyFileFlags::NONE)
+            .unwrap();
+        assert_eq!(back.boolean(touch::GROUP, touch::KEY).ok(), Some(false));
     }
 
     #[test]
