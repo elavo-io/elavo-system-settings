@@ -56,6 +56,12 @@ pub fn listed(pane: &Pane) -> bool {
     pane.parent.is_none() && (pane.id != "touchscreen" || touchscreen::present())
 }
 
+/// Panes `--list-panes` offers to Lens: the sidebar's, and the pages that
+/// open from a hub. Touchscreen controls is left out without a touchscreen.
+pub fn searchable(pane: &Pane) -> bool {
+    pane.parent.is_some() || listed(pane)
+}
+
 pub fn all() -> Vec<Pane> {
     vec![
         // Connections
@@ -112,7 +118,16 @@ pub fn all() -> Vec<Pane> {
             title: || tr("Appearance"),
             icon: "preferences-desktop-appearance-symbolic",
             color: "dark",
-            keywords: &["dark", "light", "accent", "color", "colour", "theme"],
+            keywords: &[
+                "dark",
+                "light",
+                "dark mode",
+                "light mode",
+                "accent",
+                "color",
+                "colour",
+                "theme",
+            ],
             group: 2,
             parent: None,
             build: appearance::build,

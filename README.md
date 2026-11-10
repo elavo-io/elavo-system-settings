@@ -38,6 +38,10 @@ A running instance switches to the pane instead of opening a second
 window. Other components open panes the same way: the dock's Dock
 Settings… item uses `--pane dock`.
 
+`--list-panes` prints one line per page that can be opened: the ID, the
+title, the icon name, and the search words joined by `;`, separated by
+tabs. Lens reads it to find Settings pages, and opens them with `--pane`.
+
 ## Where settings go
 
 | Setting | Stored in |

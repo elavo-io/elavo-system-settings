@@ -246,6 +246,15 @@ fn launch_target(
     }
 }
 
+/// One `--list-panes` line: the ID, the title, the icon name, and the
+/// search words joined by `;`, separated by tabs. Lens reads these to find
+/// pages, so later columns may be added but these stay in this order.
+fn pane_line(id: &str, title: &str, icon: &str, keywords: &[&str]) -> String {
+    let clean = |s: &str| s.replace(['\t', '\n', ';'], " ");
+    let words: Vec<String> = keywords.iter().map(|k| clean(k)).collect();
+    format!("{id}\t{}\t{icon}\t{}", clean(title), words.join(";"))
+}
+
 /// `--pane ID`, `--pane=ID`, or a bare ID.
 pub fn requested_pane(args: &[String]) -> Option<String> {
     let mut iter = args.iter().skip(1);
@@ -274,8 +283,11 @@ pub fn run() -> glib::ExitCode {
         return glib::ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "--list-panes") {
-        for p in crate::panes::all() {
-            println!("{}\t{}", p.id, (p.title)());
+        for p in crate::panes::all()
+            .iter()
+            .filter(|p| crate::panes::searchable(p))
+        {
+            println!("{}", pane_line(p.id, &(p.title)(), p.icon, p.keywords));
         }
         return glib::ExitCode::SUCCESS;
     }
@@ -330,6 +342,24 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn pane_lines_are_tab_separated() {
+        assert_eq!(
+            pane_line(
+                "wifi",
+                "Wi-Fi",
+                "network-wireless-symbolic",
+                &["wifi", "known networks"]
+            ),
+            "wifi\tWi-Fi\tnetwork-wireless-symbolic\twifi;known networks"
+        );
+        assert_eq!(
+            pane_line("general", "General", "x", &[]),
+            "general\tGeneral\tx\t"
+        );
+        assert_eq!(pane_line("a", "A\tB", "x", &["c;d"]), "a\tA B\tx\tc d");
     }
 
     #[test]
