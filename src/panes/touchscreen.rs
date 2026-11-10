@@ -1,11 +1,15 @@
 //! Touchscreen controls. The sidebar shows this pane only when a
 //! touchscreen is connected. The enlarged window buttons are on unless
 //! `touch.conf` turns them off. labwc reads that file on the next tap.
+//!
+//! The on-screen keyboard settings go in `onscreen-keyboard.conf`, which
+//! `elavo-keyboard` watches and applies at once.
 
 use gtk::glib;
 use gtk::prelude::*;
 
 use crate::backend::keyfile;
+use crate::backend::keyfile::onscreen_keyboard::{self as osk, Mode, Size};
 use crate::i18n::tr;
 use crate::widgets;
 
@@ -65,8 +69,104 @@ pub fn build() -> gtk::Widget {
         glib::Propagation::Proceed
     });
     page.append(&widgets::group(None, &[row]));
+    page.append(&keyboard_group(&status));
     page.append(&status);
     page.upcast()
+}
+
+fn mode_label(mode: Mode) -> String {
+    match mode {
+        Mode::Automatic => tr("Automatic"),
+        Mode::Always => tr("Always"),
+        Mode::Never => tr("Never"),
+    }
+}
+
+/// Says when the chosen mode shows the keyboard.
+fn mode_subtitle(mode: Mode) -> String {
+    match mode {
+        Mode::Automatic => tr("When a text field is tapped and no keyboard is in use"),
+        Mode::Always => tr("Whenever a text field is selected"),
+        Mode::Never => tr("Never shown"),
+    }
+}
+
+fn size_label(size: Size) -> String {
+    match size {
+        Size::Compact => tr("Compact"),
+        Size::Standard => tr("Standard"),
+        Size::Large => tr("Large"),
+    }
+}
+
+fn dropdown(labels: &[String], selected: usize) -> gtk::DropDown {
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let dd = gtk::DropDown::builder()
+        .model(&gtk::StringList::new(&refs))
+        .build();
+    dd.set_selected(selected as u32);
+    dd
+}
+
+fn keyboard_group(status: &gtk::Label) -> gtk::Box {
+    let mode = osk::mode();
+    let modes: Vec<String> = Mode::ALL.iter().map(|m| mode_label(*m)).collect();
+    let mode_dd = dropdown(
+        &modes,
+        Mode::ALL.iter().position(|m| *m == mode).unwrap_or(0),
+    );
+    let mode_row = widgets::row_with_subtitle(
+        &tr("On-Screen Keyboard"),
+        Some(&mode_subtitle(mode)),
+        &mode_dd,
+    );
+    let subtitle = subtitle_label(&mode_row);
+
+    let size = osk::size();
+    let sizes: Vec<String> = Size::ALL.iter().map(|s| size_label(*s)).collect();
+    let size_dd = dropdown(
+        &sizes,
+        Size::ALL.iter().position(|s| *s == size).unwrap_or(1),
+    );
+    let size_row = widgets::row(&tr("Keyboard size"), &size_dd);
+    size_row.set_sensitive(mode != Mode::Never);
+
+    let st = status.clone();
+    let size_row_for_mode = size_row.clone();
+    mode_dd.connect_selected_notify(move |dd| {
+        let Some(mode) = Mode::ALL.get(dd.selected() as usize).copied() else {
+            return;
+        };
+        if let Some(label) = &subtitle {
+            label.set_label(&mode_subtitle(mode));
+        }
+        size_row_for_mode.set_sensitive(mode != Mode::Never);
+        save_result(&st, osk::set_mode(mode));
+    });
+    let st = status.clone();
+    size_dd.connect_selected_notify(move |dd| {
+        if let Some(size) = Size::ALL.get(dd.selected() as usize).copied() {
+            save_result(&st, osk::set_size(size));
+        }
+    });
+
+    widgets::group(None, &[mode_row, size_row])
+}
+
+fn save_result(status: &gtk::Label, result: std::io::Result<()>) {
+    match result {
+        Ok(()) => widgets::set_status(status, ""),
+        Err(e) => widgets::set_status(status, &format!("{} {e}", tr("Could not save:"))),
+    }
+}
+
+/// The subtitle label `widgets::row_with_subtitle` made, so it can follow
+/// the dropdown.
+fn subtitle_label(row: &gtk::ListBoxRow) -> Option<gtk::Label> {
+    let content = row.child()?;
+    let title_box = content.first_child()?;
+    let title = title_box.first_child()?;
+    title.next_sibling()?.downcast::<gtk::Label>().ok()
 }
 
 #[cfg(test)]

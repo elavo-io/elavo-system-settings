@@ -177,7 +177,8 @@ pub mod applications {
     }
 }
 
-/// `keyboard.conf`, read by `elavo-input`. Missing means on.
+/// `keyboard.conf`, read by `elavo-keyboard` (before it, `elavo-input`).
+/// Missing means on.
 pub mod keyboard {
     pub const FILE: &str = "keyboard.conf";
     pub const GROUP: &str = "Text";
@@ -226,6 +227,94 @@ pub mod touch {
     pub fn set_enlarged_buttons(on: bool) -> std::io::Result<()> {
         let file = super::load(FILE);
         file.set_boolean(GROUP, KEY, on);
+        super::save(FILE, &file)
+    }
+}
+
+/// `onscreen-keyboard.conf`, read by `elavo-keyboard`, which watches the
+/// file and applies a change at once. Missing means Automatic, Standard.
+pub mod onscreen_keyboard {
+    pub const FILE: &str = "onscreen-keyboard.conf";
+    pub const GROUP: &str = "OnScreenKeyboard";
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub enum Mode {
+        /// After a touchscreen tap, while no physical key is in use.
+        #[default]
+        Automatic,
+        Always,
+        Never,
+    }
+
+    impl Mode {
+        pub const ALL: [Mode; 3] = [Mode::Automatic, Mode::Always, Mode::Never];
+
+        pub fn parse(text: &str) -> Self {
+            match text.trim().to_ascii_lowercase().as_str() {
+                "always" => Self::Always,
+                "never" => Self::Never,
+                _ => Self::Automatic,
+            }
+        }
+
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Automatic => "automatic",
+                Self::Always => "always",
+                Self::Never => "never",
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub enum Size {
+        Compact,
+        #[default]
+        Standard,
+        Large,
+    }
+
+    impl Size {
+        pub const ALL: [Size; 3] = [Size::Compact, Size::Standard, Size::Large];
+
+        pub fn parse(text: &str) -> Self {
+            match text.trim().to_ascii_lowercase().as_str() {
+                "compact" => Self::Compact,
+                "large" => Self::Large,
+                _ => Self::Standard,
+            }
+        }
+
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Compact => "compact",
+                Self::Standard => "standard",
+                Self::Large => "large",
+            }
+        }
+    }
+
+    pub fn mode() -> Mode {
+        super::string(&super::load(FILE), GROUP, "Mode")
+            .map(|s| Mode::parse(&s))
+            .unwrap_or_default()
+    }
+
+    pub fn size() -> Size {
+        super::string(&super::load(FILE), GROUP, "Size")
+            .map(|s| Size::parse(&s))
+            .unwrap_or_default()
+    }
+
+    pub fn set_mode(mode: Mode) -> std::io::Result<()> {
+        let file = super::load(FILE);
+        file.set_string(GROUP, "Mode", mode.as_str());
+        super::save(FILE, &file)
+    }
+
+    pub fn set_size(size: Size) -> std::io::Result<()> {
+        let file = super::load(FILE);
+        file.set_string(GROUP, "Size", size.as_str());
         super::save(FILE, &file)
     }
 }
@@ -316,6 +405,28 @@ mod tests {
         );
         back.set_boolean(keyboard::GROUP, keyboard::KEY, true);
         assert!(back.to_data().contains("AddPeriodWithDoubleSpace=true"));
+    }
+
+    #[test]
+    fn onscreen_keyboard_values() {
+        use onscreen_keyboard::{Mode, Size};
+        assert_eq!(Mode::default(), Mode::Automatic);
+        assert_eq!(Mode::parse("Never"), Mode::Never);
+        assert_eq!(Mode::parse("always "), Mode::Always);
+        assert_eq!(Mode::parse("sometimes"), Mode::Automatic);
+        for m in Mode::ALL {
+            assert_eq!(Mode::parse(m.as_str()), m);
+        }
+        assert_eq!(Size::default(), Size::Standard);
+        assert_eq!(Size::parse("huge"), Size::Standard);
+        for s in Size::ALL {
+            assert_eq!(Size::parse(s.as_str()), s);
+        }
+        let file = glib::KeyFile::new();
+        file.set_string(onscreen_keyboard::GROUP, "Mode", Mode::Never.as_str());
+        let text = file.to_data();
+        assert!(text.contains("[OnScreenKeyboard]"));
+        assert!(text.contains("Mode=never"));
     }
 
     #[test]

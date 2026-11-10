@@ -1,7 +1,7 @@
 //! Keyboard: double-space period, key repeat, the layout, and the shortcut
 //! list. Repeat goes in the user `rc.xml`, the layout in the user labwc
 //! `environment`; labwc reloads both on SIGHUP. The period switch is
-//! `keyboard.conf`, which `elavo-input` reads.
+//! `keyboard.conf`, which `elavo-keyboard` reads.
 
 use std::rc::Rc;
 
