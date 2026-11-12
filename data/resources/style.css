@@ -392,3 +392,25 @@ headerbar.settings-sidebar-bar {
 .driver-step-current {
   font-weight: 700;
 }
+
+/* Concentric corners. The window is 16px round; the sidebar floats 4px
+   inside it, so its corners are 16 - 4 = 12px and the two curves stay
+   parallel. The title-bar band and the list below are one panel. */
+headerbar.settings-sidebar-bar {
+  margin: 4px 0 0 4px;
+  border-radius: 12px 12px 0 0;
+  background-color: alpha(currentColor, 0.06);
+}
+
+.settings-sidebar {
+  margin: 0 0 4px 4px;
+  border-radius: 0 0 12px 12px;
+  background-color: alpha(currentColor, 0.06);
+}
+
+/* The 4px gap replaces the hairline beside the panel. */
+headerbar.settings-sidebar-bar + separator,
+.settings-sidebar + separator {
+  min-width: 4px;
+  background: none;
+}
