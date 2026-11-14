@@ -14,6 +14,9 @@ const ADAPTER: &str = "org.bluez.Adapter1";
 const DEVICE: &str = "org.bluez.Device1";
 const AGENT_MANAGER: &str = "org.bluez.AgentManager1";
 const AGENT_PATH: &str = "/io/elavo/SystemSettings/BluetoothAgent";
+const SETUP_NAME: &str = "io.elavo.Bluetooth";
+const SETUP_PATH: &str = "/io/elavo/Bluetooth";
+const SETUP_IFACE: &str = "io.elavo.Bluetooth1";
 
 #[derive(Clone, Debug, Default)]
 pub struct Adapter {
@@ -152,6 +155,8 @@ pub async fn pair(conn: &gio::DBusConnection, device: &str) -> Result<(), glib::
 }
 
 pub async fn connect(conn: &gio::DBusConnection, device: &str) -> Result<(), glib::Error> {
+    // A keyboard that connects on its own is dropped unless it is trusted.
+    let _ = dbus::set(conn, BLUEZ, device, DEVICE, "Trusted", true.to_variant()).await;
     dbus::call(conn, BLUEZ, device, DEVICE, "Connect", None)
         .await
         .map(|_| ())
@@ -247,6 +252,32 @@ impl Drop for Agent {
         if let Some(id) = self.id.take() {
             let _ = self.conn.unregister_object(id);
         }
+        // Give the login-and-session agent the default slot back so a
+        // paired keyboard can still connect after this window closes.
+        if let Ok(path) = glib::variant::ObjectPath::try_from(AGENT_PATH.to_owned()) {
+            let _ = self.conn.call_sync(
+                Some(BLUEZ),
+                "/org/bluez",
+                AGENT_MANAGER,
+                "UnregisterAgent",
+                Some(&(path,).to_variant()),
+                None,
+                gio::DBusCallFlags::NONE,
+                1000,
+                None::<&gio::Cancellable>,
+            );
+        }
+        let _ = self.conn.call_sync(
+            Some(SETUP_NAME),
+            SETUP_PATH,
+            SETUP_IFACE,
+            "ReclaimDefault",
+            None,
+            None,
+            gio::DBusCallFlags::NONE,
+            1000,
+            None::<&gio::Cancellable>,
+        );
     }
 }
 
