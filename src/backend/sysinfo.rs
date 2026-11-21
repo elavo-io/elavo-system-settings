@@ -1,11 +1,14 @@
 //! What the About pane lists. Read from `/proc`, `/sys`, and `os-release`,
 //! the same sources Folio's About Elavo window uses.
 
-pub fn os_release(key: &str) -> Option<String> {
-    let text = std::fs::read_to_string("/etc/os-release")
+pub fn os_release_text() -> String {
+    std::fs::read_to_string("/etc/os-release")
         .or_else(|_| std::fs::read_to_string("/usr/lib/os-release"))
-        .unwrap_or_default();
-    parse_os_release(&text, key)
+        .unwrap_or_default()
+}
+
+pub fn os_release(key: &str) -> Option<String> {
+    parse_os_release(&os_release_text(), key)
 }
 
 pub fn parse_os_release(text: &str, key: &str) -> Option<String> {
@@ -15,6 +18,34 @@ pub fn parse_os_release(text: &str, key: &str) -> Option<String> {
             (k.trim() == key).then(|| v.trim().trim_matches('"').trim_matches('\'').to_owned())
         })
         .filter(|v| !v.is_empty())
+}
+
+/// The edition shown after the version, or `None` on the standard image
+/// and for unrecognized `VARIANT_ID` values. `VARIANT_ID` is preferred;
+/// `VARIANT` is used only when it is already a known Elavo display name.
+pub fn edition_label_from_os_release(text: &str) -> Option<&'static str> {
+    if let Some(id) = parse_os_release(text, "VARIANT_ID") {
+        return match id.as_str() {
+            "nvidia-legacy" => Some("NVIDIA Legacy"),
+            "nvidia-open" => Some("NVIDIA Open"),
+            _ => None,
+        };
+    }
+    match parse_os_release(text, "VARIANT").as_deref() {
+        Some("NVIDIA Legacy") => Some("NVIDIA Legacy"),
+        Some("NVIDIA Open") => Some("NVIDIA Open"),
+        _ => None,
+    }
+}
+
+/// The version, with the edition in parentheses when this is an NVIDIA
+/// image. About prefixes this with the translated "Version" word.
+pub fn version_suffix(text: &str) -> Option<String> {
+    let version = parse_os_release(text, "VERSION").filter(|v| !v.is_empty())?;
+    Some(match edition_label_from_os_release(text) {
+        Some(edition) => format!("{version} ({edition})"),
+        None => version,
+    })
 }
 
 pub fn cpu() -> Option<String> {
@@ -161,6 +192,58 @@ mod tests {
         assert_eq!(parse_os_release(text, "VERSION_ID").as_deref(), Some("44"));
         assert_eq!(parse_os_release(text, "IMAGE_ID").as_deref(), Some("elavo"));
         assert_eq!(parse_os_release(text, "MISSING"), None);
+    }
+
+    #[test]
+    fn version_suffix_adds_known_editions() {
+        assert_eq!(
+            version_suffix(
+                "NAME=\"Elavo\"\nVERSION=\"0.3.4.1\"\nVARIANT=\"NVIDIA Legacy\"\nVARIANT_ID=nvidia-legacy\n"
+            )
+            .as_deref(),
+            Some("0.3.4.1 (NVIDIA Legacy)")
+        );
+        // VARIANT_ID wins, even when VARIANT still says "NVIDIA".
+        assert_eq!(
+            version_suffix(
+                "NAME=\"Elavo\"\nVERSION=\"0.3.4.1\"\nVARIANT=\"NVIDIA\"\nVARIANT_ID=nvidia-open\n"
+            )
+            .as_deref(),
+            Some("0.3.4.1 (NVIDIA Open)")
+        );
+        assert_eq!(
+            version_suffix("NAME=\"Elavo\"\nVERSION=\"0.3.4.1\"\n").as_deref(),
+            Some("0.3.4.1")
+        );
+        assert_eq!(
+            version_suffix(
+                "NAME=\"Elavo\"\nVERSION=\"0.3.4.1\"\nVARIANT=\"Workstation\"\nVARIANT_ID=workstation\n"
+            )
+            .as_deref(),
+            Some("0.3.4.1")
+        );
+        assert_eq!(
+            version_suffix("NAME=\"Elavo\"\nVERSION=\"0.3.4.1\"\nVARIANT=\"NVIDIA Legacy\"\n")
+                .as_deref(),
+            Some("0.3.4.1 (NVIDIA Legacy)")
+        );
+        assert_eq!(
+            version_suffix("NAME=\"Elavo\"\nVERSION=\"0.3.4.1\"\nVARIANT_ID=unknown\n").as_deref(),
+            Some("0.3.4.1")
+        );
+        assert_eq!(
+            version_suffix("NAME=\"Elavo\"\nVARIANT_ID=nvidia-open\n"),
+            None
+        );
+        assert_eq!(
+            edition_label_from_os_release("VARIANT_ID=nvidia-legacy\n"),
+            Some("NVIDIA Legacy")
+        );
+        assert_eq!(
+            edition_label_from_os_release("VARIANT_ID=nvidia-open\n"),
+            Some("NVIDIA Open")
+        );
+        assert_eq!(edition_label_from_os_release("NAME=Elavo\n"), None);
     }
 
     #[test]

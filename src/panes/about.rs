@@ -12,11 +12,12 @@ use crate::i18n::tr;
 use crate::widgets;
 
 /// The Elavo version only. The ostree build stamp (`44.2026…`) is left
-/// out: the Fedora version has its own row below.
+/// out: the Fedora version has its own row below. On an NVIDIA edition
+/// the image type follows the version, in parentheses.
 fn version() -> String {
-    match sysinfo::os_release("VERSION") {
-        Some(base) if !base.is_empty() => format!("{} {base}", tr("Version")),
-        _ => String::new(),
+    match sysinfo::version_suffix(&sysinfo::os_release_text()) {
+        Some(suffix) => format!("{} {suffix}", tr("Version")),
+        None => String::new(),
     }
 }
 
