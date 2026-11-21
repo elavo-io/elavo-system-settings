@@ -61,8 +61,8 @@ enum Command {
     LoginWindow(LoginWindow),
     /// Load Broadcom's `wl`, or turn on the built-in `brcmfmac` driver.
     WifiDriver(WifiDriver),
-    /// `bootc switch` to `elavo-nvidia` on the same tag. Offered only after
-    /// that image is published.
+    /// `bootc switch` to `elavo-nvidia-open` or `elavo-nvidia-legacy` on
+    /// the same tag, chosen from the GPU's PCI id.
     SwitchNvidia,
 }
 
@@ -148,25 +148,14 @@ fn parse(args: &[String]) -> Result<Command, String> {
     }
 }
 
-/// `ghcr.io/elavo-io/elavo:stable` to `ghcr.io/elavo-io/elavo-nvidia:stable`.
-/// Only the main image name `elavo` is rewritten, and the tag is kept.
-fn nvidia_target(image: &str) -> Option<String> {
-    let image = image.split('@').next()?;
-    let (repo, last) = image.rsplit_once('/')?;
-    let (name, tag) = match last.split_once(':') {
-        Some((name, tag)) => (name, Some(tag)),
-        None => (last, None),
-    };
-    if name != "elavo" {
-        return None;
-    }
-    Some(match tag {
-        Some(tag) => format!("{repo}/elavo-nvidia:{tag}"),
-        None => format!("{repo}/elavo-nvidia"),
-    })
+/// `ghcr.io/elavo-io/elavo:stable` to `ghcr.io/elavo-io/elavo-nvidia-legacy:stable`.
+fn nvidia_target(image: &str, edition: drivers::NvidiaEdition) -> Option<String> {
+    drivers::nvidia_image_target(image, edition)
 }
 
-/// Swap the tag of `image` for `tag`, dropping any digest:
+/// Swap the tag of `image` for `tag`, dropping any digest, and keep the
+/// image name so a channel switch stays on `elavo`, `elavo-nvidia-open`,
+/// or `elavo-nvidia-legacy`.
 /// `ghcr.io/o/elavo:stable` to `ghcr.io/o/elavo:latest`.
 fn retag(image: &str, tag: &str) -> Option<String> {
     let image = image.split('@').next()?;
@@ -506,12 +495,22 @@ fn execute(command: Command) -> Result<(), String> {
         Command::WifiDriver(WifiDriver::Broadcom) => wifi_broadcom(),
         Command::WifiDriver(WifiDriver::Brcmfmac) => wifi_brcmfmac(),
         Command::SwitchNvidia => {
+            if drivers::secure_boot_enabled() {
+                return Err(
+                    "Secure Boot is on, so the NVIDIA driver would not load. Nothing was changed."
+                        .to_owned(),
+                );
+            }
+            let edition = drivers::needed_nvidia_edition(&drivers::pci_devices())?;
             let current = booted()?;
-            let target = nvidia_target(&current.image).ok_or("the booted image is not elavo")?;
+            let target =
+                nvidia_target(&current.image, edition).ok_or("the booted image is not elavo")?;
             if target == current.image {
+                println!("already");
                 println!("Already on {target}");
                 return Ok(());
             }
+            println!("reboot");
             println!("Switching to {target}");
             let mut p = tool("bootc");
             p.args(["switch", "--transport", &current.transport]);
@@ -652,19 +651,44 @@ mod tests {
     #[test]
     fn nvidia_target_keeps_the_tag() {
         assert_eq!(
-            nvidia_target("ghcr.io/elavo-io/elavo:stable").as_deref(),
-            Some("ghcr.io/elavo-io/elavo-nvidia:stable")
+            nvidia_target(
+                "ghcr.io/elavo-io/elavo:stable",
+                drivers::NvidiaEdition::Legacy
+            )
+            .as_deref(),
+            Some("ghcr.io/elavo-io/elavo-nvidia-legacy:stable")
         );
         assert_eq!(
-            nvidia_target("ghcr.io/elavo-io/elavo:latest").as_deref(),
-            Some("ghcr.io/elavo-io/elavo-nvidia:latest")
+            nvidia_target(
+                "ghcr.io/elavo-io/elavo:latest",
+                drivers::NvidiaEdition::Open
+            )
+            .as_deref(),
+            Some("ghcr.io/elavo-io/elavo-nvidia-open:latest")
         );
         assert_eq!(
-            nvidia_target("ghcr.io/elavo-io/elavo@sha256:abc").as_deref(),
-            Some("ghcr.io/elavo-io/elavo-nvidia")
+            nvidia_target(
+                "ghcr.io/elavo-io/elavo@sha256:abc",
+                drivers::NvidiaEdition::Open
+            )
+            .as_deref(),
+            Some("ghcr.io/elavo-io/elavo-nvidia-open")
         );
-        assert_eq!(nvidia_target("ghcr.io/elavo-io/elavo-nvidia:stable"), None);
-        assert_eq!(nvidia_target("ghcr.io/elavo-io/other:stable"), None);
+        assert_eq!(
+            nvidia_target(
+                "ghcr.io/elavo-io/elavo-nvidia-legacy:latest",
+                drivers::NvidiaEdition::Legacy
+            )
+            .as_deref(),
+            Some("ghcr.io/elavo-io/elavo-nvidia-legacy:latest")
+        );
+        assert_eq!(
+            nvidia_target(
+                "ghcr.io/elavo-io/other:stable",
+                drivers::NvidiaEdition::Open
+            ),
+            None
+        );
     }
 
     #[test]

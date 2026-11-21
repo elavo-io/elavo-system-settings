@@ -2,14 +2,26 @@
 //! a module or writes a file; the helper does that.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::OnceLock;
 
-/// `elavo-nvidia` is specified and not published. The wizard explains it
-/// and does not offer to switch until this returns true, in the change that
-/// publishes the image.
-pub fn nvidia_image_published() -> bool {
-    false
+mod nvidia_gpus {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/backend/nvidia_gpus.rs"
+    ));
 }
+
+/// NVIDIA's supported-gpus list, shipped with the driver on the NVIDIA
+/// editions. The embedded table is used when this file is not present,
+/// which is the case on the base image.
+pub const NVIDIA_SUPPORTED_GPUS: &str = "/usr/share/doc/nvidia-driver/supported-gpus.json";
+
+/// EFI Secure Boot state. The first four bytes are attributes; the fifth
+/// is 1 when Secure Boot is on, 0 when it is off. Readable without root.
+pub const SECURE_BOOT_EFIVAR: &str =
+    "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c";
 
 // The helper writes these. This binary only shows the wizard.
 #[allow(dead_code)]
@@ -64,10 +76,124 @@ pub struct WifiChip {
     pub kind: WifiKind,
 }
 
+/// Which NVIDIA edition a GPU needs, or why it cannot use one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NvidiaSupport {
+    /// Turing and newer. Image name `elavo-nvidia-open`.
+    Open,
+    /// Maxwell, Pascal, or Volta. Image name `elavo-nvidia-legacy`.
+    Legacy,
+    /// Older than Maxwell. Stay on the base image.
+    Unsupported,
+}
+
+/// The NVIDIA image a GPU should run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NvidiaEdition {
+    Open,
+    Legacy,
+}
+
+impl NvidiaEdition {
+    /// The image repository name, without a registry or tag.
+    pub fn image_name(self) -> &'static str {
+        match self {
+            NvidiaEdition::Open => "elavo-nvidia-open",
+            NvidiaEdition::Legacy => "elavo-nvidia-legacy",
+        }
+    }
+}
+
+impl From<NvidiaEdition> for NvidiaSupport {
+    fn from(edition: NvidiaEdition) -> Self {
+        match edition {
+            NvidiaEdition::Open => NvidiaSupport::Open,
+            NvidiaEdition::Legacy => NvidiaSupport::Legacy,
+        }
+    }
+}
+
+/// Which Elavo image this computer is running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ElavoImage {
+    Base,
+    NvidiaOpen,
+    NvidiaLegacy,
+}
+
+impl ElavoImage {
+    fn edition(self) -> Option<NvidiaEdition> {
+        match self {
+            ElavoImage::Base => None,
+            ElavoImage::NvidiaOpen => Some(NvidiaEdition::Open),
+            ElavoImage::NvidiaLegacy => Some(NvidiaEdition::Legacy),
+        }
+    }
+}
+
+/// What the Drivers wizard should do for NVIDIA graphics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NvidiaGap {
+    /// Switch to this edition, keeping the current tag.
+    Switch {
+        edition: NvidiaEdition,
+        id: String,
+        from: ElavoImage,
+    },
+    /// The driver would not load because Secure Boot is on.
+    SecureBoot {
+        edition: NvidiaEdition,
+        id: String,
+        /// Already on this edition, but the module did not load.
+        current: bool,
+    },
+    /// Already on the right edition, but the nvidia module is not loaded.
+    NotLoaded { edition: NvidiaEdition, id: String },
+    /// The GPU is older than the current NVIDIA driver supports.
+    Unsupported { id: String },
+    /// The GPU is not in NVIDIA's supported-gpus list.
+    Unknown { id: String },
+}
+
+impl NvidiaGap {
+    pub fn is_actionable(&self) -> bool {
+        matches!(self, NvidiaGap::Switch { .. })
+    }
+
+    pub fn id(&self) -> &str {
+        match self {
+            NvidiaGap::Switch { id, .. }
+            | NvidiaGap::SecureBoot { id, .. }
+            | NvidiaGap::NotLoaded { id, .. }
+            | NvidiaGap::Unsupported { id }
+            | NvidiaGap::Unknown { id } => id,
+        }
+    }
+}
+
+/// What `gaps` needs besides the PCI device list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScanCtx {
+    pub nvidia_module: bool,
+    pub image: ElavoImage,
+    pub secure_boot: bool,
+}
+
+impl ScanCtx {
+    #[cfg(test)]
+    pub fn base() -> Self {
+        Self {
+            nvidia_module: false,
+            image: ElavoImage::Base,
+            secure_boot: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Gap {
     Wifi(WifiChip),
-    Nvidia,
+    Nvidia(NvidiaGap),
     T2,
     Facetime,
 }
@@ -119,7 +245,7 @@ fn is_display(class: &str) -> bool {
 /// What the wizard should list. A Wi-Fi chip that already has a wireless
 /// interface is left out. The proprietary driver is never offered for a
 /// chip `brcmfmac` can run.
-pub fn gaps(devices: &[PciDevice], nvidia_module: bool) -> Vec<Gap> {
+pub fn gaps(devices: &[PciDevice], ctx: ScanCtx) -> Vec<Gap> {
     let mut out = Vec::new();
     let mut saw_proprietary = false;
     let mut saw_builtin = false;
@@ -154,12 +280,8 @@ pub fn gaps(devices: &[PciDevice], nvidia_module: bool) -> Vec<Gap> {
         },
         _ => 3,
     });
-    if !nvidia_module
-        && devices
-            .iter()
-            .any(|device| device.vendor == NVIDIA && is_display(&device.class))
-    {
-        out.push(Gap::Nvidia);
+    if let Some(gap) = nvidia_gap(devices, ctx) {
+        out.push(Gap::Nvidia(gap));
     }
     if devices
         .iter()
@@ -252,6 +374,14 @@ pub enum Scenario {
     Failed,
     /// A proprietary Wi-Fi chip, NVIDIA graphics, and an Apple T2.
     Several,
+    /// Pascal NVIDIA graphics on the base image. Offers a switch to legacy.
+    Nvidia,
+    /// Turing NVIDIA graphics on the base image. Offers a switch to open.
+    NvidiaOpen,
+    /// Pascal NVIDIA graphics, but Secure Boot is on.
+    NvidiaSecureBoot,
+    /// A Kepler GPU that the current NVIDIA driver does not support.
+    NvidiaUnsupported,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -288,7 +418,13 @@ impl Scenario {
             Scenario::BuiltIn => vec![wifi("43ba")],
             Scenario::Firmware => vec![wifi("4464")],
             Scenario::None => Vec::new(),
-            Scenario::Several => vec![wifi("43a0"), Gap::Nvidia, Gap::T2],
+            Scenario::Several => vec![wifi("43a0"), nvidia_switch_gap(), Gap::T2],
+            Scenario::Nvidia => vec![nvidia_switch_gap()],
+            Scenario::NvidiaOpen => vec![nvidia_open_switch_gap()],
+            Scenario::NvidiaSecureBoot => vec![nvidia_secure_boot_gap()],
+            Scenario::NvidiaUnsupported => vec![Gap::Nvidia(NvidiaGap::Unsupported {
+                id: "1180".to_owned(),
+            })],
         }
     }
 
@@ -297,6 +433,23 @@ impl Scenario {
     }
 
     fn outcome(self, gap: &Gap) -> SetupOutcome {
+        if let Gap::Nvidia(state) = gap {
+            if !state.is_actionable() {
+                return SetupOutcome::Explained;
+            }
+            return match self {
+                Scenario::Restart => SetupOutcome::Restart,
+                Scenario::Missing => SetupOutcome::Missing,
+                Scenario::Blocked => SetupOutcome::Blocked,
+                Scenario::Failed => {
+                    SetupOutcome::Failed("The NVIDIA edition was not switched.".to_owned())
+                }
+                Scenario::Firmware | Scenario::None | Scenario::NvidiaUnsupported => {
+                    SetupOutcome::Explained
+                }
+                _ => SetupOutcome::Restart,
+            };
+        }
         let actionable = matches!(
             gap,
             Gap::Wifi(WifiChip {
@@ -312,12 +465,41 @@ impl Scenario {
             Scenario::Missing => SetupOutcome::Missing,
             Scenario::Blocked => SetupOutcome::Blocked,
             Scenario::Failed => SetupOutcome::Failed("The driver was not turned on.".to_owned()),
-            Scenario::Firmware | Scenario::None => SetupOutcome::Explained,
+            Scenario::Firmware
+            | Scenario::None
+            | Scenario::Nvidia
+            | Scenario::NvidiaOpen
+            | Scenario::NvidiaSecureBoot
+            | Scenario::NvidiaUnsupported => SetupOutcome::Explained,
             Scenario::Proprietary | Scenario::BuiltIn | Scenario::Ready | Scenario::Several => {
                 SetupOutcome::Ready
             }
         }
     }
+}
+
+fn nvidia_switch_gap() -> Gap {
+    Gap::Nvidia(NvidiaGap::Switch {
+        edition: NvidiaEdition::Legacy,
+        id: "1d10".to_owned(),
+        from: ElavoImage::Base,
+    })
+}
+
+fn nvidia_open_switch_gap() -> Gap {
+    Gap::Nvidia(NvidiaGap::Switch {
+        edition: NvidiaEdition::Open,
+        id: "1f82".to_owned(),
+        from: ElavoImage::Base,
+    })
+}
+
+fn nvidia_secure_boot_gap() -> Gap {
+    Gap::Nvidia(NvidiaGap::SecureBoot {
+        edition: NvidiaEdition::Legacy,
+        id: "1d10".to_owned(),
+        current: false,
+    })
 }
 
 pub fn mode_from(value: Option<&str>) -> Mode {
@@ -348,6 +530,10 @@ fn parse_scenario(name: &str) -> Option<Scenario> {
         "blocked" => Scenario::Blocked,
         "failed" => Scenario::Failed,
         "several" => Scenario::Several,
+        "nvidia" => Scenario::Nvidia,
+        "nvidia-open" => Scenario::NvidiaOpen,
+        "nvidia-secureboot" => Scenario::NvidiaSecureBoot,
+        "nvidia-unsupported" => Scenario::NvidiaUnsupported,
         _ => return None,
     })
 }
@@ -356,10 +542,7 @@ fn parse_scenario(name: &str) -> Option<Scenario> {
 /// An unknown scenario shows nothing rather than the live hardware.
 pub fn scan() -> Vec<Gap> {
     match mode() {
-        Mode::Live => {
-            let nvidia = Path::new("/sys/module/nvidia").exists();
-            gaps(&pci_devices(), nvidia)
-        }
+        Mode::Live => gaps(&pci_devices(), live_scan_ctx()),
         Mode::Scenario(scenario) => scenario.gaps(),
         Mode::Rejected => Vec::new(),
     }
@@ -424,8 +607,7 @@ fn wifi_banner_for(mode: Mode, nm_has_wifi: bool) -> WifiBanner {
             if nm_has_wifi {
                 return WifiBanner::None;
             }
-            let nvidia = Path::new("/sys/module/nvidia").exists();
-            banner_from(&gaps(&pci_devices(), nvidia))
+            banner_from(&gaps(&pci_devices(), live_scan_ctx()))
         }
         Mode::Scenario(scenario) => {
             let ready = SIMULATED_WIFI_READY.with(|ready| ready.get());
@@ -460,6 +642,11 @@ impl Gap {
                 ..
             })
         )
+    }
+
+    /// A switch to an NVIDIA edition this image can start.
+    pub fn is_actionable_nvidia(&self) -> bool {
+        matches!(self, Gap::Nvidia(state) if state.is_actionable())
     }
 
     /// The as-is disclosure is only for Broadcom's proprietary driver.
@@ -519,7 +706,274 @@ pub fn needs_brcmfmac_option() -> bool {
         .any(|device| device.vendor == BROADCOM && device.device == "43ba" && !device.wireless)
 }
 
-fn pci_devices() -> Vec<PciDevice> {
+fn live_scan_ctx() -> ScanCtx {
+    ScanCtx {
+        nvidia_module: Path::new("/sys/module/nvidia").exists(),
+        image: elavo_image_from_os_release_path(Path::new("/usr/lib/os-release")),
+        secure_boot: secure_boot_enabled(),
+    }
+}
+
+/// Secure Boot as the firmware reports it. Missing or unreadable is off,
+/// which covers BIOS systems and a missing efivar. No root needed.
+pub fn secure_boot_enabled() -> bool {
+    secure_boot_enabled_at(Path::new(SECURE_BOOT_EFIVAR))
+}
+
+pub fn secure_boot_enabled_at(path: &Path) -> bool {
+    let Ok(data) = std::fs::read(path) else {
+        return false;
+    };
+    data.get(4).copied() == Some(1)
+}
+
+pub fn elavo_image_from_os_release_path(path: &Path) -> ElavoImage {
+    std::fs::read_to_string(path)
+        .map(|text| elavo_image_from_os_release(&text))
+        .unwrap_or(ElavoImage::Base)
+}
+
+/// `VARIANT_ID` from os-release. Only `nvidia-open` and `nvidia-legacy`
+/// are NVIDIA editions; anything else is the base image.
+pub fn elavo_image_from_os_release(text: &str) -> ElavoImage {
+    for line in text.lines() {
+        let Some(value) = line.strip_prefix("VARIANT_ID=") else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"');
+        return match value {
+            "nvidia-open" => ElavoImage::NvidiaOpen,
+            "nvidia-legacy" => ElavoImage::NvidiaLegacy,
+            _ => ElavoImage::Base,
+        };
+    }
+    ElavoImage::Base
+}
+
+/// The last path component of an image reference, without a tag or digest.
+#[allow(dead_code)]
+pub fn image_basename(image: &str) -> Option<&str> {
+    let image = image.split('@').next()?;
+    let last = image.rsplit('/').next()?;
+    let name = last.split(':').next()?;
+    (!name.is_empty()).then_some(name)
+}
+
+#[allow(dead_code)]
+pub fn elavo_image_from_reference(image: &str) -> Option<ElavoImage> {
+    match image_basename(image)? {
+        "elavo" => Some(ElavoImage::Base),
+        "elavo-nvidia-open" => Some(ElavoImage::NvidiaOpen),
+        "elavo-nvidia-legacy" => Some(ElavoImage::NvidiaLegacy),
+        // The unpublished single-image name, before the two editions.
+        "elavo-nvidia" => None,
+        _ => None,
+    }
+}
+
+const ELAVO_SWITCHABLE: &[&str] = &[
+    "elavo",
+    "elavo-nvidia",
+    "elavo-nvidia-open",
+    "elavo-nvidia-legacy",
+];
+
+fn rewrite_elavo_image(image: &str, dest: &str) -> Option<String> {
+    let image = image.split('@').next()?;
+    let (repo, last) = image.rsplit_once('/')?;
+    let (name, tag) = match last.split_once(':') {
+        Some((name, tag)) => (name, Some(tag)),
+        None => (last, None),
+    };
+    if !ELAVO_SWITCHABLE.contains(&name) {
+        return None;
+    }
+    Some(match tag {
+        Some(tag) => format!("{repo}/{dest}:{tag}"),
+        None => format!("{repo}/{dest}"),
+    })
+}
+
+/// `ghcr.io/elavo-io/elavo:latest` to `ghcr.io/elavo-io/elavo-nvidia-legacy:latest`.
+/// Accepts the base image and either NVIDIA edition, and keeps the tag.
+#[allow(dead_code)]
+pub fn nvidia_image_target(image: &str, edition: NvidiaEdition) -> Option<String> {
+    rewrite_elavo_image(image, edition.image_name())
+}
+
+/// `ghcr.io/elavo-io/elavo-nvidia-legacy:latest` to `ghcr.io/elavo-io/elavo:latest`.
+/// Target for switching back to the standard Elavo image, keeping the tag.
+#[allow(dead_code)]
+pub fn base_image_target(image: &str) -> Option<String> {
+    let name = image_basename(image)?;
+    if name == "elavo" || !ELAVO_SWITCHABLE.contains(&name) {
+        return None;
+    }
+    rewrite_elavo_image(image, "elavo")
+}
+
+pub fn embedded_nvidia_support(id: &str) -> Option<NvidiaSupport> {
+    let id = id.trim().trim_start_matches("0x").to_ascii_lowercase();
+    if nvidia_gpus::OPEN.binary_search(&id.as_str()).is_ok() {
+        Some(NvidiaSupport::Open)
+    } else if nvidia_gpus::LEGACY.binary_search(&id.as_str()).is_ok() {
+        Some(NvidiaSupport::Legacy)
+    } else if nvidia_gpus::UNSUPPORTED.binary_search(&id.as_str()).is_ok() {
+        Some(NvidiaSupport::Unsupported)
+    } else {
+        None
+    }
+}
+
+/// Parse NVIDIA's supported-gpus.json and classify each unique device id.
+pub fn parse_supported_gpus_json(text: &str) -> Option<BTreeMap<String, NvidiaSupport>> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let chips = value.get("chips")?.as_array()?;
+    let mut map = BTreeMap::new();
+    for chip in chips {
+        let devid = chip
+            .get("devid")?
+            .as_str()?
+            .trim_start_matches("0x")
+            .to_ascii_lowercase();
+        if devid.is_empty() {
+            continue;
+        }
+        let support = if chip.get("legacybranch").and_then(|b| b.as_str()).is_some() {
+            NvidiaSupport::Unsupported
+        } else if chip
+            .get("features")
+            .and_then(|f| f.as_array())
+            .is_some_and(|features| {
+                features
+                    .iter()
+                    .any(|item| item.as_str() == Some("kernelopen"))
+            })
+        {
+            NvidiaSupport::Open
+        } else {
+            NvidiaSupport::Legacy
+        };
+        map.insert(devid, support);
+    }
+    Some(map)
+}
+
+fn installed_nvidia_table() -> Option<&'static BTreeMap<String, NvidiaSupport>> {
+    static TABLE: OnceLock<Option<BTreeMap<String, NvidiaSupport>>> = OnceLock::new();
+    TABLE
+        .get_or_init(|| {
+            let text = std::fs::read_to_string(NVIDIA_SUPPORTED_GPUS).ok()?;
+            parse_supported_gpus_json(&text)
+        })
+        .as_ref()
+}
+
+/// Prefer the driver copy on this computer when it is present, so an
+/// NVIDIA image can stay current. Fall back to the embedded table.
+pub fn nvidia_support(id: &str) -> Option<NvidiaSupport> {
+    let id = id.trim().trim_start_matches("0x").to_ascii_lowercase();
+    if let Some(table) = installed_nvidia_table() {
+        return table.get(&id).copied();
+    }
+    embedded_nvidia_support(&id)
+}
+
+fn nvidia_display_gpus(devices: &[PciDevice]) -> Vec<&PciDevice> {
+    devices
+        .iter()
+        .filter(|device| device.vendor == NVIDIA && is_display(&device.class))
+        .collect()
+}
+
+fn nvidia_gap(devices: &[PciDevice], ctx: ScanCtx) -> Option<NvidiaGap> {
+    let gpus = nvidia_display_gpus(devices);
+    if gpus.is_empty() {
+        return None;
+    }
+    let mut editions: Vec<(NvidiaEdition, String)> = Vec::new();
+    let mut unsupported = Vec::new();
+    let mut unknown = Vec::new();
+    for gpu in gpus {
+        match nvidia_support(&gpu.device) {
+            Some(NvidiaSupport::Open) => editions.push((NvidiaEdition::Open, gpu.device.clone())),
+            Some(NvidiaSupport::Legacy) => {
+                editions.push((NvidiaEdition::Legacy, gpu.device.clone()))
+            }
+            Some(NvidiaSupport::Unsupported) => unsupported.push(gpu.device.clone()),
+            None => unknown.push(gpu.device.clone()),
+        }
+    }
+    if editions.is_empty() {
+        if let Some(id) = unsupported.into_iter().next() {
+            return Some(NvidiaGap::Unsupported { id });
+        }
+        return unknown
+            .into_iter()
+            .next()
+            .map(|id| NvidiaGap::Unknown { id });
+    }
+    let edition = editions[0].0;
+    if editions.iter().any(|(other, _)| *other != edition) {
+        return Some(NvidiaGap::Unknown {
+            id: editions[0].1.clone(),
+        });
+    }
+    let id = editions[0].1.clone();
+    let already = ctx.image.edition() == Some(edition);
+    if already {
+        if ctx.nvidia_module {
+            return None;
+        }
+        if ctx.secure_boot {
+            return Some(NvidiaGap::SecureBoot {
+                edition,
+                id,
+                current: true,
+            });
+        }
+        return Some(NvidiaGap::NotLoaded { edition, id });
+    }
+    if ctx.secure_boot {
+        return Some(NvidiaGap::SecureBoot {
+            edition,
+            id,
+            current: false,
+        });
+    }
+    Some(NvidiaGap::Switch {
+        edition,
+        id,
+        from: ctx.image,
+    })
+}
+
+/// The edition `switch-nvidia` should rebase to, or a reason it should not.
+#[allow(dead_code)]
+pub fn needed_nvidia_edition(devices: &[PciDevice]) -> Result<NvidiaEdition, String> {
+    match nvidia_gap(
+        devices,
+        ScanCtx {
+            nvidia_module: false,
+            image: ElavoImage::Base,
+            secure_boot: false,
+        },
+    ) {
+        Some(NvidiaGap::Switch { edition, .. }) => Ok(edition),
+        Some(NvidiaGap::Unsupported { id }) => Err(format!(
+            "NVIDIA GPU 10de:{id} is not supported by the current driver"
+        )),
+        Some(NvidiaGap::Unknown { id }) => Err(format!(
+            "NVIDIA GPU 10de:{id} is not in the supported-gpus list"
+        )),
+        Some(NvidiaGap::SecureBoot { .. } | NvidiaGap::NotLoaded { .. }) | None => {
+            Err("this computer has no NVIDIA graphics Elavo can switch to".to_owned())
+        }
+    }
+}
+
+/// Live PCI devices, for the helper. The wizard uses `scan` instead.
+pub fn pci_devices() -> Vec<PciDevice> {
     let Ok(entries) = std::fs::read_dir("/sys/bus/pci/devices") else {
         return Vec::new();
     };
@@ -583,7 +1037,7 @@ mod tests {
 
     #[test]
     fn air_2013_needs_the_proprietary_driver() {
-        let found = gaps(&[dev(BROADCOM, "43a0", "028000", false)], false);
+        let found = gaps(&[dev(BROADCOM, "43a0", "028000", false)], ScanCtx::base());
         let chip = wifi(&found);
         assert_eq!(chip.len(), 1);
         assert_eq!(chip[0].id, "43a0");
@@ -594,7 +1048,7 @@ mod tests {
 
     #[test]
     fn a_working_interface_is_not_listed() {
-        let found = gaps(&[dev(BROADCOM, "43a0", "028000", true)], false);
+        let found = gaps(&[dev(BROADCOM, "43a0", "028000", true)], ScanCtx::base());
         assert!(wifi(&found).is_empty());
     }
 
@@ -605,14 +1059,14 @@ mod tests {
                 dev(BROADCOM, "43a3", "028000", false),
                 dev(BROADCOM, "43ba", "028000", false),
             ],
-            false,
+            ScanCtx::base(),
         );
         let chip = wifi(&found);
         assert_eq!(chip.len(), 1);
         assert_eq!(chip[0].kind, WifiKind::BuiltIn);
         assert_eq!(chip[0].id, "43a3");
 
-        let only_43602 = gaps(&[dev(BROADCOM, "43ba", "028000", false)], false);
+        let only_43602 = gaps(&[dev(BROADCOM, "43ba", "028000", false)], ScanCtx::base());
         let chip = wifi(&only_43602);
         assert_eq!(chip[0].id, "43ba");
         assert!(chip[0].needs_option());
@@ -620,7 +1074,7 @@ mod tests {
 
     #[test]
     fn t2_wifi_is_explained_and_not_the_proprietary_driver() {
-        let found = gaps(&[dev(BROADCOM, "4464", "028000", false)], false);
+        let found = gaps(&[dev(BROADCOM, "4464", "028000", false)], ScanCtx::base());
         let chip = wifi(&found);
         assert_eq!(chip.len(), 1);
         assert_eq!(chip[0].kind, WifiKind::Firmware);
@@ -629,11 +1083,26 @@ mod tests {
 
     #[test]
     fn nvidia_is_a_separate_case_from_its_audio_function() {
-        let gpu = gaps(&[dev(NVIDIA, "1c8d", "030200", false)], false);
-        assert_eq!(gpu, vec![Gap::Nvidia]);
-        let with_module = gaps(&[dev(NVIDIA, "1c8d", "030000", false)], true);
-        assert!(with_module.is_empty());
-        let audio = gaps(&[dev(NVIDIA, "10f0", "040300", false)], false);
+        let gpu = gaps(&[dev(NVIDIA, "1c8d", "030200", false)], ScanCtx::base());
+        assert_eq!(
+            gpu,
+            vec![Gap::Nvidia(NvidiaGap::Switch {
+                edition: NvidiaEdition::Legacy,
+                id: "1c8d".to_owned(),
+                from: ElavoImage::Base,
+            })]
+        );
+        // The module being loaded on the base image does not hide a needed
+        // switch; already-on is decided by the image, not the module.
+        let with_module = gaps(
+            &[dev(NVIDIA, "1c8d", "030000", false)],
+            ScanCtx {
+                nvidia_module: true,
+                ..ScanCtx::base()
+            },
+        );
+        assert_eq!(with_module.len(), 1);
+        let audio = gaps(&[dev(NVIDIA, "10f0", "040300", false)], ScanCtx::base());
         assert!(audio.is_empty());
     }
 
@@ -644,20 +1113,37 @@ mod tests {
                 dev(APPLE, "1801", "060400", false),
                 dev(BROADCOM, "1570", "048000", false),
             ],
-            false,
+            ScanCtx::base(),
         );
         assert_eq!(found, vec![Gap::T2, Gap::Facetime]);
     }
 
     #[test]
     fn an_unknown_broadcom_chip_is_ignored() {
-        let found = gaps(&[dev(BROADCOM, "9999", "028000", false)], false);
+        let found = gaps(&[dev(BROADCOM, "9999", "028000", false)], ScanCtx::base());
         assert!(found.is_empty());
     }
 
     #[test]
-    fn nvidia_image_is_not_published() {
-        assert!(!nvidia_image_published());
+    fn the_embedded_ids_match_nvidia_classification() {
+        assert_eq!(embedded_nvidia_support("1d10"), Some(NvidiaSupport::Legacy));
+        assert_eq!(embedded_nvidia_support("1c8d"), Some(NvidiaSupport::Legacy));
+        assert_eq!(embedded_nvidia_support("1b80"), Some(NvidiaSupport::Legacy));
+        assert_eq!(embedded_nvidia_support("1d81"), Some(NvidiaSupport::Legacy));
+        assert_eq!(embedded_nvidia_support("1380"), Some(NvidiaSupport::Legacy));
+        assert_eq!(embedded_nvidia_support("1f82"), Some(NvidiaSupport::Open));
+        assert_eq!(embedded_nvidia_support("2184"), Some(NvidiaSupport::Open));
+        assert_eq!(embedded_nvidia_support("2206"), Some(NvidiaSupport::Open));
+        assert_eq!(embedded_nvidia_support("2684"), Some(NvidiaSupport::Open));
+        assert_eq!(
+            embedded_nvidia_support("1180"),
+            Some(NvidiaSupport::Unsupported)
+        );
+        assert_eq!(
+            embedded_nvidia_support("0x1D10"),
+            Some(NvidiaSupport::Legacy)
+        );
+        assert_eq!(embedded_nvidia_support("ffff"), None);
     }
 
     #[test]
@@ -703,6 +1189,10 @@ mod tests {
             "blocked",
             "failed",
             "several",
+            "nvidia",
+            "nvidia-open",
+            "nvidia-secureboot",
+            "nvidia-unsupported",
         ] {
             let mode = mode_from(Some(name));
             assert!(matches!(mode, Mode::Scenario(_)), "{name}");
@@ -835,6 +1325,232 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn mx150_on_the_base_image_offers_the_legacy_edition() {
+        let found = gaps(&[dev(NVIDIA, "1d10", "030200", false)], ScanCtx::base());
+        assert_eq!(
+            found,
+            vec![Gap::Nvidia(NvidiaGap::Switch {
+                edition: NvidiaEdition::Legacy,
+                id: "1d10".to_owned(),
+                from: ElavoImage::Base,
+            })]
+        );
+        assert!(found[0].is_actionable_nvidia());
+    }
+
+    #[test]
+    fn already_on_the_legacy_edition_is_not_listed() {
+        let found = gaps(
+            &[dev(NVIDIA, "1d10", "030200", false)],
+            ScanCtx {
+                nvidia_module: true,
+                image: ElavoImage::NvidiaLegacy,
+                secure_boot: false,
+            },
+        );
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn the_wrong_nvidia_edition_is_offered_even_if_the_module_is_loaded() {
+        let found = gaps(
+            &[dev(NVIDIA, "1d10", "030200", false)],
+            ScanCtx {
+                nvidia_module: true,
+                image: ElavoImage::NvidiaOpen,
+                secure_boot: false,
+            },
+        );
+        match &found[..] {
+            [Gap::Nvidia(NvidiaGap::Switch {
+                edition: NvidiaEdition::Legacy,
+                id,
+                from: ElavoImage::NvidiaOpen,
+            })] => assert_eq!(id, "1d10"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn secure_boot_blocks_the_switch() {
+        let found = gaps(
+            &[dev(NVIDIA, "1d10", "030200", false)],
+            ScanCtx {
+                secure_boot: true,
+                ..ScanCtx::base()
+            },
+        );
+        match &found[..] {
+            [Gap::Nvidia(NvidiaGap::SecureBoot {
+                edition: NvidiaEdition::Legacy,
+                id,
+                current: false,
+            })] => {
+                assert_eq!(id, "1d10");
+                assert!(!found[0].is_actionable_nvidia());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn secure_boot_on_the_right_edition_is_explained_if_the_module_is_missing() {
+        let found = gaps(
+            &[dev(NVIDIA, "1d10", "030200", false)],
+            ScanCtx {
+                nvidia_module: false,
+                image: ElavoImage::NvidiaLegacy,
+                secure_boot: true,
+            },
+        );
+        match &found[..] {
+            [Gap::Nvidia(NvidiaGap::SecureBoot { current: true, .. })] => {}
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_turing_gpu_offers_the_open_edition() {
+        let found = gaps(&[dev(NVIDIA, "1f82", "030000", false)], ScanCtx::base());
+        match &found[..] {
+            [Gap::Nvidia(NvidiaGap::Switch {
+                edition: NvidiaEdition::Open,
+                id,
+                from: ElavoImage::Base,
+            })] => assert_eq!(id, "1f82"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn kepler_is_explained_and_not_offered() {
+        let found = gaps(&[dev(NVIDIA, "1180", "030000", false)], ScanCtx::base());
+        assert_eq!(
+            found,
+            vec![Gap::Nvidia(NvidiaGap::Unsupported {
+                id: "1180".to_owned()
+            })]
+        );
+        assert!(!found[0].is_actionable_nvidia());
+    }
+
+    #[test]
+    fn an_unknown_nvidia_id_is_not_guessed() {
+        let found = gaps(&[dev(NVIDIA, "ffff", "030000", false)], ScanCtx::base());
+        assert_eq!(
+            found,
+            vec![Gap::Nvidia(NvidiaGap::Unknown {
+                id: "ffff".to_owned()
+            })]
+        );
+    }
+
+    #[test]
+    fn nvidia_image_targets_keep_the_tag() {
+        assert_eq!(
+            nvidia_image_target("ghcr.io/elavo-io/elavo:latest", NvidiaEdition::Legacy).as_deref(),
+            Some("ghcr.io/elavo-io/elavo-nvidia-legacy:latest")
+        );
+        assert_eq!(
+            nvidia_image_target("ghcr.io/elavo-io/elavo:stable", NvidiaEdition::Open).as_deref(),
+            Some("ghcr.io/elavo-io/elavo-nvidia-open:stable")
+        );
+        assert_eq!(
+            nvidia_image_target(
+                "ghcr.io/elavo-io/elavo-nvidia-open:latest",
+                NvidiaEdition::Legacy
+            )
+            .as_deref(),
+            Some("ghcr.io/elavo-io/elavo-nvidia-legacy:latest")
+        );
+        assert_eq!(
+            nvidia_image_target("ghcr.io/elavo-io/elavo@sha256:abc", NvidiaEdition::Open)
+                .as_deref(),
+            Some("ghcr.io/elavo-io/elavo-nvidia-open")
+        );
+        assert_eq!(
+            nvidia_image_target("ghcr.io/elavo-io/other:latest", NvidiaEdition::Open),
+            None
+        );
+        assert_eq!(
+            base_image_target("ghcr.io/elavo-io/elavo-nvidia-legacy:latest").as_deref(),
+            Some("ghcr.io/elavo-io/elavo:latest")
+        );
+        assert_eq!(
+            base_image_target("ghcr.io/elavo-io/elavo-nvidia-open:stable").as_deref(),
+            Some("ghcr.io/elavo-io/elavo:stable")
+        );
+        assert_eq!(base_image_target("ghcr.io/elavo-io/elavo:latest"), None);
+        assert_eq!(
+            elavo_image_from_reference(
+                "ostree-unverified-registry:ghcr.io/elavo-io/elavo-nvidia-legacy:latest"
+            ),
+            Some(ElavoImage::NvidiaLegacy)
+        );
+        assert_eq!(
+            elavo_image_from_os_release("NAME=Elavo\nVARIANT_ID=nvidia-legacy\n"),
+            ElavoImage::NvidiaLegacy
+        );
+        assert_eq!(
+            elavo_image_from_os_release("NAME=Elavo\nVARIANT_ID=nvidia-open\n"),
+            ElavoImage::NvidiaOpen
+        );
+        assert_eq!(
+            elavo_image_from_os_release("NAME=Elavo\n"),
+            ElavoImage::Base
+        );
+    }
+
+    #[test]
+    fn secure_boot_reads_the_efivar_payload() {
+        let dir = std::env::temp_dir();
+        let off = dir.join("elavo-sb-off");
+        let on = dir.join("elavo-sb-on");
+        std::fs::write(&off, [6u8, 0, 0, 0, 0]).unwrap();
+        std::fs::write(&on, [6u8, 0, 0, 0, 1]).unwrap();
+        assert!(!secure_boot_enabled_at(&off));
+        assert!(secure_boot_enabled_at(&on));
+        assert!(!secure_boot_enabled_at(Path::new("/no/such/secure-boot")));
+        let _ = std::fs::remove_file(&off);
+        let _ = std::fs::remove_file(&on);
+    }
+
+    #[test]
+    fn supported_gpus_json_uses_kernelopen_and_legacybranch() {
+        let json = r#"{"chips":[
+            {"devid":"0x1D10","name":"GeForce MX150","features":[]},
+            {"devid":"0x1F82","name":"GeForce GTX 1650","features":["kernelopen"]},
+            {"devid":"0x1180","name":"GeForce GTX 680","legacybranch":"470.xx","features":[]}
+        ]}"#;
+        let map = parse_supported_gpus_json(json).unwrap();
+        assert_eq!(map.get("1d10"), Some(&NvidiaSupport::Legacy));
+        assert_eq!(map.get("1f82"), Some(&NvidiaSupport::Open));
+        assert_eq!(map.get("1180"), Some(&NvidiaSupport::Unsupported));
+    }
+
+    #[test]
+    fn embedded_table_matches_installed_json_when_present() {
+        let Ok(text) = std::fs::read_to_string(NVIDIA_SUPPORTED_GPUS) else {
+            return;
+        };
+        let parsed = parse_supported_gpus_json(&text).expect("supported-gpus.json");
+        for (id, support) in &parsed {
+            assert_eq!(embedded_nvidia_support(id), Some(*support), "{id}");
+        }
+        for &id in nvidia_gpus::OPEN
+            .iter()
+            .chain(nvidia_gpus::LEGACY)
+            .chain(nvidia_gpus::UNSUPPORTED)
+        {
+            assert!(parsed.contains_key(id), "{id}");
+        }
+        assert_eq!(
+            parsed.len(),
+            nvidia_gpus::OPEN.len() + nvidia_gpus::LEGACY.len() + nvidia_gpus::UNSUPPORTED.len()
+        );
     }
 
     #[test]

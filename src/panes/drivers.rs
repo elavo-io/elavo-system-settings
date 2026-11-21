@@ -349,25 +349,10 @@ fn show_setup(wizard: &Rc<Wizard>) {
         show(wizard);
         return;
     };
-    if !gap.is_actionable_wifi() && !matches!(gap, drivers::Gap::Nvidia) {
+    if !gap.is_actionable_wifi() && !gap.is_actionable_nvidia() {
         paragraph(
             &wizard.body,
             &tr("There's nothing to set up for this hardware."),
-        );
-        let next = wizard.clone();
-        let continue_button = gtk::Button::with_label(&tr("Continue"));
-        continue_button.add_css_class("suggested-action");
-        continue_button.connect_clicked(move |_| finish(&next, drivers::SetupOutcome::Explained));
-        wizard.body.append(&button_row(
-            &[back_button(wizard, REVIEW)],
-            &[continue_button],
-        ));
-        return;
-    }
-    if matches!(gap, drivers::Gap::Nvidia) && !drivers::nvidia_image_published() {
-        paragraph(
-            &wizard.body,
-            &tr("The NVIDIA edition of Elavo isn't available yet."),
         );
         let next = wizard.clone();
         let continue_button = gtk::Button::with_label(&tr("Continue"));
@@ -411,7 +396,7 @@ fn begin(wizard: &Rc<Wizard>) {
     }
     match &gap {
         drivers::Gap::Wifi(chip) => begin_wifi(wizard, chip.clone()),
-        drivers::Gap::Nvidia => begin_nvidia(wizard),
+        drivers::Gap::Nvidia(state) if state.is_actionable() => begin_nvidia(wizard),
         _ => finish(wizard, drivers::SetupOutcome::Explained),
     }
 }
@@ -454,11 +439,21 @@ fn begin_nvidia(wizard: &Rc<Wizard>) {
     show(wizard);
     let wizard = wizard.clone();
     glib::spawn_future_local(async move {
-        let outcome = match helper::run(&["switch-nvidia"], |_| {}).await {
+        let status = Rc::new(RefCell::new(String::new()));
+        let watch = status.clone();
+        let result = helper::run(&["switch-nvidia"], move |line| {
+            if matches!(line, "already" | "reboot") {
+                watch.replace(line.to_owned());
+            }
+        })
+        .await;
+        wizard.busy.set(false);
+        let status = status.borrow().clone();
+        let outcome = match result {
+            Ok(()) if status == "already" => drivers::SetupOutcome::Explained,
             Ok(()) => drivers::SetupOutcome::Restart,
             Err(error) => drivers::SetupOutcome::Failed(error),
         };
-        wizard.busy.set(false);
         finish(&wizard, outcome);
     });
 }
@@ -482,14 +477,23 @@ fn show_summary(wizard: &Rc<Wizard>) {
         show(wizard);
         return;
     };
+    let nvidia = matches!(selected(wizard), Some(drivers::Gap::Nvidia(_)));
     match &outcome {
         drivers::SetupOutcome::Ready => paragraph(
             &wizard.body,
             &tr("Wi-Fi is ready. Choose a network to connect."),
         ),
+        drivers::SetupOutcome::Restart if nvidia => paragraph(
+            &wizard.body,
+            &tr("Restart your computer to finish switching to the NVIDIA edition."),
+        ),
         drivers::SetupOutcome::Restart => paragraph(
             &wizard.body,
             &tr("Restart your computer to finish setting up Wi-Fi."),
+        ),
+        drivers::SetupOutcome::Missing if nvidia => paragraph(
+            &wizard.body,
+            &tr("This version of Elavo couldn't find the NVIDIA edition. Nothing was changed."),
         ),
         drivers::SetupOutcome::Missing => paragraph(
             &wizard.body,
@@ -504,6 +508,15 @@ fn show_summary(wizard: &Rc<Wizard>) {
                 &wizard.body,
                 &tr("This can happen when Secure Boot is turned on."),
             );
+        }
+        drivers::SetupOutcome::Failed(detail) if nvidia => {
+            paragraph(
+                &wizard.body,
+                &tr("Elavo couldn't switch to its NVIDIA edition. Some changes may already have been made, so try again before restarting."),
+            );
+            if !detail.is_empty() {
+                text_details(&wizard.body, detail);
+            }
         }
         drivers::SetupOutcome::Failed(detail) => {
             paragraph(
@@ -557,11 +570,7 @@ fn intro_lines(gap: &drivers::Gap) -> Vec<String> {
             ],
             drivers::WifiKind::Firmware => vec![firmware_explanation()],
         },
-        drivers::Gap::Nvidia => vec![
-            tr("This computer has NVIDIA graphics but is using a basic graphics driver, which can be slower and may not support every display."),
-            tr("To use NVIDIA's driver, Elavo switches this computer to its NVIDIA edition. Your accounts, apps, and files stay as they are, and you can switch back in Software Update."),
-            tr("After you restart, you may be asked to enroll a security key. Follow the steps on that screen to finish."),
-        ],
+        drivers::Gap::Nvidia(state) => nvidia_intro(state),
         drivers::Gap::T2 => vec![tr(
             "This computer has an Apple T2 chip. Its keyboard, trackpad, and speakers may not work, because Elavo doesn't include a driver for them yet.",
         )],
@@ -575,6 +584,61 @@ fn intro_lines(gap: &drivers::Gap) -> Vec<String> {
 /// is named here.
 pub fn firmware_explanation() -> String {
     tr("This computer's wireless card needs files from Apple that Elavo can't include, so Wi-Fi can't be set up here.")
+}
+
+fn nvidia_intro(state: &drivers::NvidiaGap) -> Vec<String> {
+    match state {
+        drivers::NvidiaGap::Switch { from, .. } if *from == drivers::ElavoImage::Base => vec![
+            tr("This computer has NVIDIA graphics but is using a basic graphics driver, which can be slower and may not support every display."),
+            tr("To use NVIDIA's driver, Elavo switches this computer to its NVIDIA edition. Your accounts, apps, and files stay as they are, and you can switch back in Software Update, under Advanced."),
+        ],
+        drivers::NvidiaGap::Switch { .. } => vec![
+            tr("This computer's NVIDIA graphics need a different NVIDIA edition of Elavo than the one that's installed."),
+            tr("Your accounts, apps, and files stay as they are, and you can switch back in Software Update, under Advanced."),
+        ],
+        drivers::NvidiaGap::SecureBoot { current: true, .. } => vec![
+            tr("This computer is already on Elavo's NVIDIA edition, but the driver can't load while Secure Boot is turned on."),
+            tr("Nothing will be changed here. The NVIDIA images are not signed for Secure Boot, so the driver will not load until Secure Boot is turned off."),
+        ],
+        drivers::NvidiaGap::SecureBoot { .. } => vec![
+            tr("This computer has NVIDIA graphics, but the driver can't be used while Secure Boot is turned on."),
+            tr("Elavo won't switch to its NVIDIA edition, because the driver would not load. Nothing will be changed."),
+        ],
+        drivers::NvidiaGap::NotLoaded { .. } => vec![
+            tr("This computer is already on Elavo's NVIDIA edition, but the driver isn't loaded."),
+            tr("Nothing will be changed here. A restart may help."),
+        ],
+        drivers::NvidiaGap::Unsupported { .. } => vec![
+            tr("This computer has NVIDIA graphics that NVIDIA's current driver doesn't support, so Elavo will keep using the basic graphics driver."),
+            tr("Nothing will be changed on this computer."),
+        ],
+        drivers::NvidiaGap::Unknown { .. } => vec![
+            tr("This computer has NVIDIA graphics, but Elavo doesn't have a known driver edition for it, so nothing will be changed."),
+        ],
+    }
+}
+
+fn nvidia_detail(state: &drivers::NvidiaGap) -> String {
+    let pci = words(&tr("PCI id 10de:{}."), state.id());
+    match state {
+        drivers::NvidiaGap::Switch { edition, .. }
+        | drivers::NvidiaGap::SecureBoot { edition, .. }
+        | drivers::NvidiaGap::NotLoaded { edition, .. } => {
+            format!("{pci} Image name: {}.", edition.image_name())
+        }
+        drivers::NvidiaGap::Unsupported { .. } => {
+            format!(
+                "{pci} {}",
+                tr("The current NVIDIA driver does not support this GPU.")
+            )
+        }
+        drivers::NvidiaGap::Unknown { .. } => {
+            format!(
+                "{pci} {}",
+                tr("This GPU is not in NVIDIA's supported-gpus list.")
+            )
+        }
+    }
 }
 
 fn review_lines(gap: &drivers::Gap) -> Vec<String> {
@@ -591,12 +655,10 @@ fn review_lines(gap: &drivers::Gap) -> Vec<String> {
             ],
             drivers::WifiKind::Firmware => vec![tr("Nothing will be changed on this computer.")],
         },
-        drivers::Gap::Nvidia if !drivers::nvidia_image_published() => {
-            vec![tr("The NVIDIA edition of Elavo isn't available yet.")]
-        }
-        drivers::Gap::Nvidia => vec![tr(
+        drivers::Gap::Nvidia(state) if state.is_actionable() => vec![tr(
             "Elavo will download its NVIDIA edition and switch to it when you restart.",
         )],
+        drivers::Gap::Nvidia(_) => vec![tr("Nothing will be changed on this computer.")],
         _ => vec![tr("Nothing will be changed on this computer.")],
     }
 }
@@ -642,9 +704,7 @@ fn detail_text(gap: &drivers::Gap) -> String {
                 &chip.id,
             ),
         },
-        drivers::Gap::Nvidia => {
-            tr("PCI vendor 10de. The nvidia module is not loaded. Image name: elavo-nvidia.")
-        }
+        drivers::Gap::Nvidia(state) => nvidia_detail(state),
         drivers::Gap::T2 => tr("Apple T2 bridge, PCI ids 106b:1801 and 106b:1802."),
         drivers::Gap::Facetime => tr("FaceTime HD camera, PCI id 14e4:1570."),
     }
@@ -655,8 +715,8 @@ fn activity(gap: &drivers::Gap) -> String {
     match gap {
         drivers::Gap::Wifi(_) if live => tr("Setting up Wi-Fi…"),
         drivers::Gap::Wifi(_) => tr("Simulation: setting up Wi-Fi…"),
-        drivers::Gap::Nvidia if live => tr("Downloading the NVIDIA edition…"),
-        drivers::Gap::Nvidia => tr("Simulation: nothing is being downloaded…"),
+        drivers::Gap::Nvidia(_) if live => tr("Downloading the NVIDIA edition…"),
+        drivers::Gap::Nvidia(_) => tr("Simulation: nothing is being downloaded…"),
         _ => tr("Working…"),
     }
 }
@@ -817,7 +877,7 @@ fn retry_button(wizard: &Rc<Wizard>) -> gtk::Button {
 fn gap_row(gap: &drivers::Gap) -> gtk::ListBoxRow {
     let (title, subtitle) = match gap {
         drivers::Gap::Wifi(chip) => (tr("Wi-Fi"), format!("Broadcom {}", chip.name)),
-        drivers::Gap::Nvidia => (tr("Graphics"), "NVIDIA".to_owned()),
+        drivers::Gap::Nvidia(_) => (tr("Graphics"), "NVIDIA".to_owned()),
         drivers::Gap::T2 => (tr("Keyboard, trackpad, and speakers"), tr("Apple T2")),
         drivers::Gap::Facetime => (tr("Camera"), tr("FaceTime HD")),
     };
