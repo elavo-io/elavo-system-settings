@@ -24,6 +24,7 @@ mod network;
 mod picture;
 mod placeholders;
 mod power;
+mod sharing;
 mod sound;
 mod storage;
 mod switcher;
@@ -400,6 +401,24 @@ pub fn all() -> Vec<Pane> {
             group: 0,
             parent: Some("general"),
             build: applications::build,
+        },
+        Pane {
+            id: "sharing",
+            title: || tr("Sharing"),
+            icon: "folder-publicshare-symbolic",
+            color: "blue",
+            keywords: &[
+                "sharing",
+                "share",
+                "localsend",
+                "airdrop",
+                "receiver",
+                "pin",
+                "favorites",
+            ],
+            group: 0,
+            parent: Some("general"),
+            build: sharing::build,
         },
         Pane {
             id: "datetime",

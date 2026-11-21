@@ -12,10 +12,10 @@ install -Dm755 target/release/elavo-system-settings "${dest}${prefix}/bin/elavo-
 # The polkit policy names this path, so it does not follow PREFIX.
 install -Dm755 target/release/elavo-system-settings-helper \
     "${dest}/usr/libexec/elavo-system-settings-helper"
-
 install -Dm644 "data/${id}.desktop" "${dest}${prefix}/share/applications/${id}.desktop"
 install -Dm644 "data/${id}.metainfo.xml" "${dest}${prefix}/share/metainfo/${id}.metainfo.xml"
 install -Dm644 "data/${id}.policy" "${dest}${prefix}/share/polkit-1/actions/${id}.policy"
+install -Dm644 data/io.elavo.Sharing.policy "${dest}${prefix}/share/polkit-1/actions/io.elavo.Sharing.policy"
 # The service names the helper's fixed path, so these do not follow PREFIX
 # either. The image enables the timer.
 for unit in elavo-system-update.service elavo-system-update.timer; do

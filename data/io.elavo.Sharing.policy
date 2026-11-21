@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- System Settings > General > Sharing asks for this before it shows the
+     LocalSend PIN. The PIN stays in the user's keyring; this only asks for
+     the user's own password, the way macOS does, so someone at an unlocked
+     computer cannot read it. -->
+<policyconfig>
+  <vendor>Elavo</vendor>
+  <vendor_url>https://github.com/elavo-io</vendor_url>
+  <icon_name>io.elavo.SystemSettings</icon_name>
+
+  <action id="io.elavo.Sharing.reveal-secret">
+    <description>Show a sharing password</description>
+    <message>Enter your password to show the sharing PIN.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

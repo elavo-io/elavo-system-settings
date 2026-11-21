@@ -21,6 +21,8 @@ pub mod picture;
 pub mod power;
 pub mod process;
 pub mod pulse;
+pub mod secret;
+pub mod sharing;
 pub mod sysinfo;
 pub mod timedate;
 pub mod updates;
