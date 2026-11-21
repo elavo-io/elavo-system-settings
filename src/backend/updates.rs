@@ -275,6 +275,8 @@ pub fn at_digest(image: &str, digest: &str) -> String {
     format!("{name}@{digest}")
 }
 
+/// Swap the tag and keep the image name, so a channel switch stays on
+/// `elavo`, `elavo-nvidia-open`, or `elavo-nvidia-legacy`.
 /// `ghcr.io/elavo-io/elavo:latest` to `ghcr.io/elavo-io/elavo:stable`.
 pub fn with_tag(image: &str, tag: &str) -> Option<String> {
     let image = image.split('@').next()?;
@@ -601,6 +603,21 @@ mod tests {
             with_tag("ghcr.io/elavo-io/elavo:latest", "stable").as_deref(),
             Some("ghcr.io/elavo-io/elavo:stable")
         );
+        let editions = ["elavo", "elavo-nvidia-open", "elavo-nvidia-legacy"];
+        let channels = ["latest", "stable", "beta"];
+        for edition in editions {
+            for from in channels {
+                for to in channels {
+                    let source = format!("ghcr.io/elavo-io/{edition}:{from}");
+                    let want = format!("ghcr.io/elavo-io/{edition}:{to}");
+                    assert_eq!(
+                        with_tag(&source, to).as_deref(),
+                        Some(want.as_str()),
+                        "{source} -> {to}"
+                    );
+                }
+            }
+        }
         assert_eq!(
             at_digest(
                 "ghcr.io/elavo-io/elavo:stable",

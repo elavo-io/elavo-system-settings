@@ -17,6 +17,7 @@
 //! elavo-system-settings-helper login-window list|name
 //! elavo-system-settings-helper wifi-driver broadcom|brcmfmac
 //! elavo-system-settings-helper switch-nvidia
+//! elavo-system-settings-helper switch-elavo
 //! ```
 //!
 //! `auto-run` is what `elavo-system-update.service` runs as root on a
@@ -64,6 +65,8 @@ enum Command {
     /// `bootc switch` to `elavo-nvidia-open` or `elavo-nvidia-legacy` on
     /// the same tag, chosen from the GPU's PCI id.
     SwitchNvidia,
+    /// `bootc switch` to `elavo` on the same tag, from an NVIDIA edition.
+    SwitchElavo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +147,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
         ["wifi-driver", "broadcom"] => Ok(Command::WifiDriver(WifiDriver::Broadcom)),
         ["wifi-driver", "brcmfmac"] => Ok(Command::WifiDriver(WifiDriver::Brcmfmac)),
         ["switch-nvidia"] => Ok(Command::SwitchNvidia),
+        ["switch-elavo"] => Ok(Command::SwitchElavo),
         _ => Err(format!("unsupported command: {}", args.join(" "))),
     }
 }
@@ -521,6 +525,26 @@ fn execute(command: Command) -> Result<(), String> {
             p.arg(&target);
             run_with_progress(p, fds)
         }
+        Command::SwitchElavo => {
+            let current = booted()?;
+            let target = drivers::base_image_target(&current.image)
+                .ok_or("the booted image is not an NVIDIA edition of elavo")?;
+            if target == current.image {
+                println!("already");
+                println!("Already on {target}");
+                return Ok(());
+            }
+            println!("reboot");
+            println!("Switching to {target}");
+            let mut p = tool("bootc");
+            p.args(["switch", "--transport", &current.transport]);
+            if current.signed {
+                p.arg("--enforce-container-sigpolicy");
+            }
+            let fds = attach_progress(&mut p)?;
+            p.arg(&target);
+            run_with_progress(p, fds)
+        }
     }
 }
 
@@ -597,6 +621,7 @@ mod tests {
             Ok(Command::WifiDriver(WifiDriver::Brcmfmac))
         );
         assert_eq!(parse(&args(&["switch-nvidia"])), Ok(Command::SwitchNvidia));
+        assert_eq!(parse(&args(&["switch-elavo"])), Ok(Command::SwitchElavo));
     }
 
     #[test]
@@ -623,6 +648,8 @@ mod tests {
             &["wifi-driver", "wl"],
             &["wifi-driver", "broadcom", "extra"],
             &["switch-nvidia", "elavo-nvidia"],
+            &["switch-elavo", "elavo"],
+            &["switch-elavo", "ghcr.io/elavo-io/elavo:latest"],
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }
@@ -646,6 +673,28 @@ mod tests {
             retag("elavo:latest", "stable").as_deref(),
             Some("elavo:stable")
         );
+        // Channel switches keep the image name, including NVIDIA editions.
+        // Beta is included so a later channel would stay on the same edition.
+        let editions = ["elavo", "elavo-nvidia-open", "elavo-nvidia-legacy"];
+        let channels = ["latest", "stable", "beta"];
+        for edition in editions {
+            for from in channels {
+                for to in channels {
+                    let source = format!("ghcr.io/elavo-io/{edition}:{from}");
+                    let want = format!("ghcr.io/elavo-io/{edition}:{to}");
+                    assert_eq!(
+                        retag(&source, to).as_deref(),
+                        Some(want.as_str()),
+                        "{source} -> {to}"
+                    );
+                }
+            }
+            assert_eq!(
+                retag(&format!("ghcr.io/elavo-io/{edition}@sha256:abc"), "latest").as_deref(),
+                Some(format!("ghcr.io/elavo-io/{edition}:latest").as_str()),
+                "{edition} digest"
+            );
+        }
     }
 
     #[test]

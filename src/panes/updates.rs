@@ -15,7 +15,7 @@ use gtk::prelude::*;
 
 use crate::backend::auto::Auto;
 use crate::backend::updates::{self, Changes, Deployment, Phase, Remote, Status};
-use crate::backend::{dbus, helper, power};
+use crate::backend::{dbus, drivers, helper, power};
 use crate::i18n::tr;
 use crate::widgets;
 
@@ -77,6 +77,11 @@ struct Pane {
     news_for: RefCell<Option<String>>,
     busy: Cell<bool>,
     syncing: Cell<bool>,
+    /// Shown only on NVIDIA editions. Opens a window with the switch back
+    /// to the standard image, so that control is not on the main page.
+    advanced: gtk::Button,
+    switch_elavo: gtk::Button,
+    advanced_window: RefCell<Option<gtk::Window>>,
 }
 
 fn format_date(rfc3339: &str) -> Option<String> {
@@ -154,6 +159,7 @@ impl Pane {
                     this.check.set_visible(false);
                     this.channel.set_sensitive(false);
                     this.rollback_row.set_visible(false);
+                    this.advanced.set_visible(false);
                 }
             }
         });
@@ -251,6 +257,7 @@ impl Pane {
             }
             None => self.rollback_row.set_visible(false),
         }
+        self.advanced.set_visible(self.on_nvidia_edition());
         self.note_stable();
     }
 
@@ -546,6 +553,8 @@ impl Pane {
         }
         self.rollback.set_sensitive(!busy);
         self.channel.set_sensitive(!busy);
+        self.advanced.set_sensitive(!busy);
+        self.switch_elavo.set_sensitive(!busy);
     }
 
     /// Run a helper command, showing its output and download progress.
@@ -695,15 +704,88 @@ impl Pane {
             let result = this.run(&["rollback"], &tr("Going back…")).await;
             this.refresh();
             match result {
-                Ok(()) => this.offer_restart().await,
+                Ok(()) => this.offer_restart(&this.rollback).await,
                 Err(e) => widgets::show_error(&this.rollback, &tr("Could not go back."), &e),
             }
         });
     }
 
-    async fn offer_restart(self: &Rc<Self>) {
+    fn on_nvidia_edition(&self) -> bool {
+        // Prefer the booted image; fall back to os-release when status
+        // has not been read yet.
+        if let Some(image) = self.booted().as_ref().map(|b| b.image.as_str()) {
+            return matches!(
+                drivers::elavo_image_from_reference(image),
+                Some(drivers::ElavoImage::NvidiaOpen | drivers::ElavoImage::NvidiaLegacy)
+            );
+        }
+        matches!(
+            drivers::elavo_image_from_os_release_path(std::path::Path::new("/usr/lib/os-release")),
+            drivers::ElavoImage::NvidiaOpen | drivers::ElavoImage::NvidiaLegacy
+        )
+    }
+
+    fn open_advanced(self: &Rc<Self>) {
+        let existing = self.advanced_window.borrow().clone();
+        let window = existing.unwrap_or_else(|| {
+            let window = widgets::popup_window(&self.advanced, &tr("Advanced"));
+            window.set_default_width(420);
+            let page = widgets::page();
+            page.set_margin_top(12);
+            page.set_margin_bottom(12);
+            page.set_margin_start(12);
+            page.set_margin_end(12);
+            page.append(
+                &gtk::Label::builder()
+                    .label(tr(
+                        "This computer is on Elavo's NVIDIA edition. You can switch back to the standard image, which does not include NVIDIA's driver.",
+                    ))
+                    .wrap(true)
+                    .xalign(0.0)
+                    .build(),
+            );
+            self.switch_elavo.set_label(&tr("Switch back to standard Elavo…"));
+            self.switch_elavo.set_halign(gtk::Align::Start);
+            self.switch_elavo.set_margin_top(12);
+            page.append(&self.switch_elavo);
+            window.set_child(Some(&page));
+            self.advanced_window.replace(Some(window.clone()));
+            window
+        });
+        window.present();
+    }
+
+    fn start_switch_elavo(self: &Rc<Self>) {
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let ok = widgets::confirm(
+                &this.switch_elavo,
+                &tr("Switch back to standard Elavo?"),
+                &tr("NVIDIA's driver will be removed when you restart. Your accounts, apps, and files stay as they are."),
+                &tr("Switch Back"),
+            )
+            .await;
+            if !ok {
+                return;
+            }
+            let result = this
+                .run(&["switch-elavo"], &tr("Switching to standard Elavo…"))
+                .await;
+            this.refresh();
+            match result {
+                Ok(()) => this.offer_restart(&this.switch_elavo).await,
+                Err(e) => widgets::show_error(
+                    &this.switch_elavo,
+                    &tr("Could not switch back to standard Elavo."),
+                    &e,
+                ),
+            }
+        });
+    }
+
+    async fn offer_restart(self: &Rc<Self>, widget: &impl IsA<gtk::Widget>) {
         if widgets::confirm(
-            &self.rollback,
+            widget,
             &tr("Restart now?"),
             &tr("The change takes effect after a restart."),
             &tr("Restart"),
@@ -878,6 +960,14 @@ pub fn build() -> gtk::Widget {
         "Elavo updates as a whole image. The current version stays available, so you can go back if something is wrong.",
     )));
 
+    let advanced = gtk::Button::with_label(&tr("Advanced…"));
+    advanced.set_halign(gtk::Align::Start);
+    advanced.set_margin_top(6);
+    // Hidden until render sees an NVIDIA edition.
+    advanced.set_visible(false);
+    page.append(&advanced);
+    let switch_elavo = gtk::Button::new();
+
     let pane = Rc::new(Pane {
         summary,
         detail,
@@ -909,6 +999,9 @@ pub fn build() -> gtk::Widget {
         news_for: RefCell::default(),
         busy: Cell::default(),
         syncing: Cell::default(),
+        advanced,
+        switch_elavo,
+        advanced_window: RefCell::default(),
     });
     pane.sync_auto(Auto::read());
     let p = pane.clone();
@@ -919,6 +1012,11 @@ pub fn build() -> gtk::Widget {
     pane.see_all.connect_clicked(move |_| p.show_all_changes());
     let p = pane.clone();
     pane.rollback.connect_clicked(move |_| p.rollback());
+    let p = pane.clone();
+    pane.advanced.connect_clicked(move |_| p.open_advanced());
+    let p = pane.clone();
+    pane.switch_elavo
+        .connect_clicked(move |_| p.start_switch_elavo());
     for switch in [&pane.download, &pane.install] {
         let p = pane.clone();
         switch.connect_active_notify(move |_| {
