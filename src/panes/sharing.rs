@@ -35,12 +35,54 @@ struct Page {
     folder_label: gtk::Label,
     name: gtk::Label,
     ls_status: gtk::Label,
+    /// Keeps localsend.conf watched so Files adding a favorite, or Always
+    /// accept, shows up here without leaving the page.
+    _conf_watch: RefCell<Option<gio::FileMonitor>>,
+    /// Rebuild the open Favorites window, when there is one.
+    favorites_fill: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 fn folder_name(path: &std::path::Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+/// Watch localsend.conf and refresh the page (and the Favorites window,
+/// if it is open). Files writes the same file when it adds a favorite.
+fn watch_conf(me: &Rc<Page>) {
+    let file = gio::File::for_path(crate::backend::keyfile::path(sharing::LOCALSEND_FILE));
+    let Ok(monitor) = file.monitor_file(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE)
+    else {
+        return;
+    };
+    let pending = Rc::new(Cell::new(false));
+    let page = Rc::downgrade(me);
+    monitor.connect_changed(move |_, _, _, event| {
+        if !matches!(
+            event,
+            gio::FileMonitorEvent::ChangesDoneHint
+                | gio::FileMonitorEvent::Created
+                | gio::FileMonitorEvent::MovedIn
+                | gio::FileMonitorEvent::Renamed
+                | gio::FileMonitorEvent::Deleted
+        ) || pending.replace(true)
+        {
+            return;
+        }
+        let pending = pending.clone();
+        let page = page.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+            pending.set(false);
+            if let Some(me) = page.upgrade() {
+                me.fill();
+                if let Some(f) = me.favorites_fill.borrow().clone() {
+                    f();
+                }
+            }
+        });
+    });
+    me._conf_watch.replace(Some(monitor));
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
@@ -327,7 +369,7 @@ fn favorites_window(from: &gtk::Button, me: &Rc<Page>) {
             let favorites = sharing::localsend().favorites;
             if favorites.is_empty() {
                 list.append(&widgets::plain_row(&widgets::caption(&tr(
-                    "No favorites yet. In Files, right-click a device under LocalSend and choose Add to LocalSend Favorites.",
+                    "No favorites yet. In Files, right-click a device under LocalSend and choose Add to LocalSend Favorites, or choose Always accept from this device when someone sends you a file.",
                 ))));
             }
             for fav in favorites {
@@ -354,7 +396,19 @@ fn favorites_window(from: &gtk::Button, me: &Rc<Page>) {
         }
     };
     f();
-    fill.replace(Some(Box::new(f)));
+    let refresh: Rc<dyn Fn()> = Rc::new(f);
+    fill.replace(Some(Box::new({
+        let refresh = refresh.clone();
+        move || refresh()
+    })));
+    me.favorites_fill.replace(Some(refresh));
+    window.connect_close_request({
+        let me = me.clone();
+        move |_| {
+            me.favorites_fill.replace(None);
+            glib::Propagation::Proceed
+        }
+    });
     root.append(&frame);
     let done = gtk::Button::builder()
         .label(tr("Done"))
@@ -392,8 +446,11 @@ pub fn build() -> gtk::Widget {
         folder_label: gtk::Label::new(None),
         name: gtk::Label::new(None),
         ls_status: widgets::status_label(),
+        _conf_watch: RefCell::new(None),
+        favorites_fill: RefCell::new(None),
     });
     localsend_section(&page, &me);
+    watch_conf(&me);
     me.fill();
 
     // The name is the computer's, from hostnamed; the kernel's until then.
@@ -409,8 +466,8 @@ pub fn build() -> gtk::Widget {
             }
         });
     }
-    // Files can change favorites and the conf behind this page; read them
-    // again whenever it is shown.
+    // Also refresh when the page is shown, in case a change arrived while
+    // it was hidden (the watch still fires; this covers the first map).
     let m = me.clone();
     page.connect_map(move |_| m.fill());
     widgets::keep_alive(&page, me);
