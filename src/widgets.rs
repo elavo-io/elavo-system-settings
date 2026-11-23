@@ -316,6 +316,20 @@ pub async fn choose(
     cancel: usize,
     default: usize,
 ) -> usize {
+    choose_inner(widget, message, detail, buttons, cancel, default, None, "").await
+}
+
+#[allow(deprecated, clippy::too_many_arguments)]
+async fn choose_inner(
+    widget: &impl IsA<gtk::Widget>,
+    message: &str,
+    detail: &str,
+    buttons: &[&str],
+    cancel: usize,
+    default: usize,
+    style: Option<(usize, &str)>,
+    technical: &str,
+) -> usize {
     let dialog = gtk::MessageDialog::builder()
         .text(message)
         .modal(true)
@@ -334,6 +348,39 @@ pub async fn choose(
         dialog.add_button(label, gtk::ResponseType::Other(i as u16));
     }
     dialog.set_default_response(gtk::ResponseType::Other(default as u16));
+    if let Some((index, class)) = style {
+        if let Some(btn) = dialog.widget_for_response(gtk::ResponseType::Other(index as u16)) {
+            btn.add_css_class(class);
+        }
+    }
+    if !technical.is_empty() {
+        let label = gtk::Label::builder()
+            .label(technical)
+            .wrap(true)
+            .selectable(true)
+            .xalign(0.0)
+            .css_classes(["caption", "monospace-log"])
+            .build();
+        let scroll = gtk::ScrolledWindow::builder()
+            .child(&label)
+            .min_content_height(80)
+            .max_content_height(180)
+            .propagate_natural_height(true)
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .hexpand(true)
+            .build();
+        let expander = gtk::Expander::builder()
+            .label(tr("Details"))
+            .child(&scroll)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_bottom(6)
+            .build();
+        if let Ok(area) = dialog.message_area().downcast::<gtk::Box>() {
+            area.append(&expander);
+        }
+    }
 
     let (tx, rx) = async_channel::bounded::<usize>(1);
     dialog.connect_response(move |dialog, response| {
@@ -359,6 +406,28 @@ pub async fn confirm(
     choose(widget, message, detail, &[&cancel, confirm_label], 0, 1).await == 1
 }
 
+/// A yes/no question whose confirm button is styled as a destructive action.
+pub async fn confirm_destructive(
+    widget: &impl IsA<gtk::Widget>,
+    message: &str,
+    detail: &str,
+    confirm_label: &str,
+) -> bool {
+    let cancel = tr("Cancel");
+    choose_inner(
+        widget,
+        message,
+        detail,
+        &[&cancel, confirm_label],
+        0,
+        0,
+        Some((1, "destructive-action")),
+        "",
+    )
+    .await
+        == 1
+}
+
 pub fn show_error(widget: &impl IsA<gtk::Widget>, message: &str, detail: &str) {
     let widget = widget.clone().upcast::<gtk::Widget>();
     let (message, detail) = (message.to_owned(), detail.to_owned());
@@ -366,6 +435,31 @@ pub fn show_error(widget: &impl IsA<gtk::Widget>, message: &str, detail: &str) {
         let close = tr("Close");
         choose(&widget, &message, &detail, &[&close], 0, 0).await;
     });
+}
+
+/// An error with optional expandable technical details and an optional
+/// extra button. Returns true when that button was pressed. The Close
+/// button is the default, so Enter does not take the extra action.
+pub async fn show_error_action(
+    widget: &impl IsA<gtk::Widget>,
+    message: &str,
+    detail: &str,
+    technical: &str,
+    action_label: &str,
+) -> bool {
+    let close = tr("Close");
+    choose_inner(
+        widget,
+        message,
+        detail,
+        &[&close, action_label],
+        0,
+        0,
+        None,
+        technical,
+    )
+    .await
+        == 1
 }
 
 /// The text of a D-Bus or other GLib error without the remote error name.

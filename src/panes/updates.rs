@@ -14,6 +14,7 @@ use gtk::glib;
 use gtk::prelude::*;
 
 use crate::backend::auto::Auto;
+use crate::backend::layered::{self, Layered};
 use crate::backend::updates::{self, Changes, Deployment, Phase, Remote, Status};
 use crate::backend::{dbus, drivers, helper, power};
 use crate::i18n::tr;
@@ -126,6 +127,50 @@ fn commit_meta(commit: &updates::Commit) -> String {
         parts.push(commit.sha.chars().take(7).collect());
     }
     parts.join(" · ")
+}
+
+fn layered_error_detail(layered: &Layered) -> String {
+    layered::error_detail(
+        &layered.names(),
+        layered::ErrorCopy {
+            one: &tr("{} is installed on top of Elavo, so the update could not be applied."),
+            many: &tr("These packages are installed on top of Elavo, so the update could not be applied: {}."),
+            none: &tr("Extra software installed on top of Elavo stopped the update from applying."),
+            reason: &tr("Elavo updates the whole system image at once, and extra packages added later have to be removed first."),
+            and: &tr("and"),
+        },
+    )
+}
+
+fn layered_confirm_detail(layered: &Layered) -> String {
+    layered::confirm_detail(
+        &layered.names(),
+        layered::ConfirmCopy {
+            one: &tr("You will lose access to {}. The update installs now and starts after a restart."),
+            many_intro: &tr("You will lose access to these apps:"),
+            many_end: &tr("The update installs now and starts after a restart."),
+            none: &tr("This will remove the extra software installed on top of Elavo, then install the update. The update starts after a restart."),
+        },
+    )
+}
+
+/// The tool's own output, for the Details expander. Drops the generic
+/// helper status line when the log already has the real error.
+fn underlying_error(error: &str, log: &str) -> String {
+    let keep = |line: &str| {
+        let t = line.trim();
+        !t.is_empty() && !t.starts_with("ELAVO_PROGRESS ") && !t.contains("exit status:")
+    };
+    let from_log: Vec<&str> = log.lines().filter(|l| keep(l)).collect();
+    if !from_log.is_empty() {
+        return from_log.join("\n");
+    }
+    let from_error: Vec<&str> = error.lines().filter(|l| keep(l)).collect();
+    if !from_error.is_empty() {
+        from_error.join("\n")
+    } else {
+        error.trim().to_owned()
+    }
 }
 
 impl Pane {
@@ -606,12 +651,82 @@ impl Pane {
                 ),
                 Phase::UpToDate | Phase::Unknown => return,
             };
+            let layered = this
+                .status
+                .borrow()
+                .as_ref()
+                .map(|s| s.layered.clone())
+                .unwrap_or_default();
             let result = this.run(&[args], &doing).await;
+            let log = this.log.label();
             this.refresh();
             if let Err(e) = result {
-                widgets::show_error(&this.action, &failed, &e);
+                this.handle_update_error(&failed, &e, &layered, &log).await;
             }
         });
+    }
+
+    async fn handle_update_error(
+        self: &Rc<Self>,
+        failed: &str,
+        error: &str,
+        layered: &Layered,
+        log: &str,
+    ) {
+        if error.contains(&tr("The administrator password was not accepted.")) {
+            return;
+        }
+        let technical = underlying_error(error, log);
+        if layered.is_empty() && !layered::error_mentions_layers(&technical) {
+            widgets::show_error(&self.action, failed, &technical);
+            return;
+        }
+        let detail = layered_error_detail(layered);
+        let anyway = widgets::show_error_action(
+            &self.action,
+            &tr("The update could not be applied."),
+            &detail,
+            &technical,
+            &tr("Update Anyway"),
+        )
+        .await;
+        if anyway {
+            self.confirm_and_update_anyway(layered).await;
+        }
+    }
+
+    async fn confirm_and_update_anyway(self: &Rc<Self>, layered: &Layered) {
+        let ok = widgets::confirm_destructive(
+            &self.action,
+            &tr("Remove the extra software and update?"),
+            &layered_confirm_detail(layered),
+            &tr("Update Anyway"),
+        )
+        .await;
+        if !ok {
+            return;
+        }
+        let result = self
+            .run(
+                &["upgrade-anyway"],
+                &tr("Removing extra software and updating…"),
+            )
+            .await;
+        let log = self.log.label();
+        self.refresh();
+        match result {
+            Ok(()) => self.offer_restart(&self.action).await,
+            Err(e) => {
+                if e.contains(&tr("The administrator password was not accepted.")) {
+                    return;
+                }
+                widgets::show_error(
+                    &self.action,
+                    &tr("The update could not be applied."),
+                    &underlying_error(&e, &log),
+                );
+            }
+        }
     }
 
     fn sync_auto(&self, auto: Auto) {

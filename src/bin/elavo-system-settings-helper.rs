@@ -7,6 +7,7 @@
 //!
 //! ```text
 //! elavo-system-settings-helper upgrade
+//! elavo-system-settings-helper upgrade-anyway
 //! elavo-system-settings-helper download
 //! elavo-system-settings-helper install
 //! elavo-system-settings-helper auto off|download|install
@@ -32,6 +33,10 @@ mod auto;
 #[path = "../backend/drivers.rs"]
 mod drivers;
 
+#[allow(dead_code)]
+#[path = "../backend/layered.rs"]
+mod layered;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::FromRawFd;
 use std::path::Path;
@@ -50,6 +55,8 @@ const STAGED_LOCKED: &str = "/run/ostree/staged-deployment-locked";
 enum Command {
     /// Download and install at the next restart.
     Upgrade,
+    /// Remove layered packages, then download and install the update.
+    UpgradeAnyway,
     /// Download only; the update waits for `install`.
     Download,
     /// Let a downloaded update install at the next restart.
@@ -129,6 +136,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
         ["upgrade"] => Ok(Command::Upgrade),
+        ["upgrade-anyway"] => Ok(Command::UpgradeAnyway),
         ["download"] => Ok(Command::Download),
         ["install"] => Ok(Command::Install),
         ["auto", mode] => auto::Auto::from_arg(mode)
@@ -198,12 +206,10 @@ fn tool(program: &str) -> Process {
 }
 
 fn run(mut p: Process) -> Result<(), String> {
-    let status = p.status().map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("{status}"))
-    }
+    p.stdout(Stdio::piped());
+    p.stderr(Stdio::piped());
+    let child = p.spawn().map_err(|e| e.to_string())?;
+    wait_forwarding(child, None)
 }
 
 fn emit_line(out: &Mutex<std::io::Stdout>, line: &str) {
@@ -240,11 +246,34 @@ fn run_with_progress(mut p: Process, (read_fd, write_fd): (i32, i32)) -> Result<
             libc::close(write_fd);
         }
     }
-    let mut child = spawned.map_err(|e| e.to_string())?;
+    let child = spawned.map_err(|e| e.to_string())?;
     unsafe { libc::close(write_fd) };
+    wait_forwarding(child, Some(read_fd))
+}
 
+fn capture_lines(
+    pipe: impl std::io::Read + Send + 'static,
+    out: &Arc<Mutex<std::io::Stdout>>,
+    captured: &Arc<Mutex<String>>,
+) {
+    for line in BufReader::new(pipe).lines() {
+        let Ok(line) = line else { break };
+        emit_line(out, &line);
+        if let Ok(mut log) = captured.lock() {
+            if !log.is_empty() {
+                log.push('\n');
+            }
+            log.push_str(&line);
+        }
+    }
+}
+
+/// Forwards stdout and stderr a line at a time. On failure, returns the
+/// tool's own output instead of only the exit status.
+fn wait_forwarding(mut child: std::process::Child, progress_fd: Option<i32>) -> Result<(), String> {
     let out = Arc::new(Mutex::new(std::io::stdout()));
-    let progress = {
+    let captured = Arc::new(Mutex::new(String::new()));
+    let progress = progress_fd.map(|read_fd| {
         let out = Arc::clone(&out);
         thread::spawn(move || {
             let file = unsafe { std::fs::File::from_raw_fd(read_fd) };
@@ -255,28 +284,26 @@ fn run_with_progress(mut p: Process, (read_fd, write_fd): (i32, i32)) -> Result<
                 }
             }
         })
-    };
+    });
     let mut copies = Vec::new();
     if let Some(stdout) = child.stdout.take() {
         let out = Arc::clone(&out);
+        let captured = Arc::clone(&captured);
         copies.push(thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                emit_line(&out, &line);
-            }
+            capture_lines(stdout, &out, &captured);
         }));
     }
     if let Some(stderr) = child.stderr.take() {
         let out = Arc::clone(&out);
+        let captured = Arc::clone(&captured);
         copies.push(thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                let Ok(line) = line else { break };
-                emit_line(&out, &line);
-            }
+            capture_lines(stderr, &out, &captured);
         }));
     }
     let status = child.wait();
-    let _ = progress.join();
+    if let Some(progress) = progress {
+        let _ = progress.join();
+    }
     for copy in copies {
         let _ = copy.join();
     }
@@ -284,7 +311,16 @@ fn run_with_progress(mut p: Process, (read_fd, write_fd): (i32, i32)) -> Result<
     if status.success() {
         Ok(())
     } else {
-        Err(format!("{status}"))
+        let text = captured
+            .lock()
+            .ok()
+            .map(|s| s.trim().to_owned())
+            .unwrap_or_default();
+        if text.is_empty() {
+            Err(format!("{status}"))
+        } else {
+            Err(text)
+        }
     }
 }
 
@@ -428,6 +464,81 @@ fn wifi_brcmfmac() -> Result<(), String> {
     }
 }
 
+/// How to drop layered changes and install the update.
+#[derive(Debug, PartialEq, Eq)]
+enum AnywayPlan {
+    /// One rpm-ostree transaction: upgrade and uninstall these packages.
+    UpgradeUninstall(Vec<String>),
+    /// Overrides or unsafe names: reset, then `bootc upgrade`.
+    ResetThenUpgrade,
+    /// Nothing is layered; just upgrade.
+    Upgrade,
+}
+
+fn anyway_plan(layered: &layered::Layered) -> AnywayPlan {
+    if layered.is_empty() {
+        return AnywayPlan::Upgrade;
+    }
+    if layered.needs_reset() {
+        return AnywayPlan::ResetThenUpgrade;
+    }
+    let all = layered.uninstall_packages();
+    let pkgs: Vec<String> = all
+        .iter()
+        .filter(|p| layered::is_safe_package(p))
+        .cloned()
+        .collect();
+    if !pkgs.is_empty() && pkgs.len() == all.len() {
+        AnywayPlan::UpgradeUninstall(pkgs)
+    } else {
+        AnywayPlan::ResetThenUpgrade
+    }
+}
+
+fn rpm_ostree_status_json() -> Result<String, String> {
+    let out = tool("rpm-ostree")
+        .args(["status", "--json"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err("rpm-ostree status failed".into());
+    }
+    String::from_utf8(out.stdout).map_err(|e| e.to_string())
+}
+
+fn upgrade_anyway() -> Result<(), String> {
+    let layered = layered::parse_booted(&rpm_ostree_status_json()?);
+    match anyway_plan(&layered) {
+        AnywayPlan::Upgrade => {
+            if Path::new(STAGED_LOCKED).exists() {
+                install_downloaded()?;
+            }
+            bootc_upgrade(&[])
+        }
+        AnywayPlan::UpgradeUninstall(pkgs) => {
+            println!("Removing extra software and updating…");
+            let mut p = tool("rpm-ostree");
+            p.arg("upgrade");
+            for pkg in pkgs {
+                p.arg(format!("--uninstall={pkg}"));
+            }
+            run(p)
+        }
+        AnywayPlan::ResetThenUpgrade => {
+            println!("Removing extra software…");
+            run({
+                let mut p = tool("rpm-ostree");
+                p.arg("reset");
+                p
+            })?;
+            if Path::new(STAGED_LOCKED).exists() {
+                install_downloaded()?;
+            }
+            bootc_upgrade(&[])
+        }
+    }
+}
+
 fn execute(command: Command) -> Result<(), String> {
     match command {
         Command::Upgrade => {
@@ -438,6 +549,7 @@ fn execute(command: Command) -> Result<(), String> {
             }
             bootc_upgrade(&[])
         }
+        Command::UpgradeAnyway => upgrade_anyway(),
         Command::Download => bootc_upgrade(&["--download-only"]),
         Command::Install => install_downloaded(),
         Command::Auto(mode) => write_atomically(ELAVO_DIR, auto::CONFIG, &mode.render()),
@@ -575,7 +687,11 @@ fn main() -> ExitCode {
     match execute(command) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("elavo-system-settings-helper: {e}");
+            // The command's own output was already forwarded. Only add a
+            // line when the error is a status with no tool text.
+            if !e.contains('\n') {
+                eprintln!("elavo-system-settings-helper: {e}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -592,6 +708,10 @@ mod tests {
     #[test]
     fn accepts_the_fixed_commands() {
         assert_eq!(parse(&args(&["upgrade"])), Ok(Command::Upgrade));
+        assert_eq!(
+            parse(&args(&["upgrade-anyway"])),
+            Ok(Command::UpgradeAnyway)
+        );
         assert_eq!(parse(&args(&["download"])), Ok(Command::Download));
         assert_eq!(parse(&args(&["install"])), Ok(Command::Install));
         assert_eq!(parse(&args(&["auto-run"])), Ok(Command::AutoRun));
@@ -644,6 +764,7 @@ mod tests {
             &["login-window", "names"],
             &["login-window", "list\nShow=name"],
             &["upgrade", "--apply"],
+            &["upgrade-anyway", "uxplay"],
             &["wifi-driver"],
             &["wifi-driver", "wl"],
             &["wifi-driver", "broadcom", "extra"],
@@ -765,5 +886,40 @@ mod tests {
         assert!(text.contains("[Login]\nShow=list\n"));
         let text = greeter_conf(LoginWindow::Name);
         assert!(text.contains("[Login]\nShow=name\n"));
+    }
+
+    #[test]
+    fn anyway_plan_uses_one_uninstall_transaction() {
+        let layered = layered::Layered {
+            packages: vec!["uxplay".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            anyway_plan(&layered),
+            AnywayPlan::UpgradeUninstall(vec!["uxplay".into()])
+        );
+        let layered = layered::Layered {
+            packages: vec!["uxplay".into(), "foo".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            anyway_plan(&layered),
+            AnywayPlan::UpgradeUninstall(vec!["uxplay".into(), "foo".into()])
+        );
+        let layered = layered::Layered {
+            packages: vec!["uxplay".into(), "foo".into()],
+            removals: vec!["firefox".into()],
+            ..Default::default()
+        };
+        assert_eq!(anyway_plan(&layered), AnywayPlan::ResetThenUpgrade);
+        assert_eq!(
+            anyway_plan(&layered::Layered::default()),
+            AnywayPlan::Upgrade
+        );
+        let bad = layered::Layered {
+            packages: vec!["--oops".into()],
+            ..Default::default()
+        };
+        assert_eq!(anyway_plan(&bad), AnywayPlan::ResetThenUpgrade);
     }
 }

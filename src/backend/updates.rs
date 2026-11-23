@@ -5,6 +5,8 @@
 
 use gtk::gio;
 
+pub use super::layered::{self, Layered};
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Deployment {
     /// `ghcr.io/elavo-io/elavo:stable`, without the `ostree-...:` transport.
@@ -39,6 +41,8 @@ pub struct Status {
     pub booted: Option<Deployment>,
     pub staged: Option<Deployment>,
     pub rollback: Option<Deployment>,
+    /// Layered packages and other changes on the booted deployment.
+    pub layered: Layered,
 }
 
 /// `ostree-image-signed:docker://ghcr.io/o/elavo:stable` to
@@ -83,6 +87,7 @@ pub fn parse(json: &str) -> Status {
             staged: b("staged"),
         };
         if dep.booted {
+            status.layered = layered::parse_deployment(d);
             status.booted = Some(dep);
         } else if dep.staged || (status.booted.is_none() && status.staged.is_none()) {
             // Deployments are listed newest first: one ahead of the booted
@@ -498,6 +503,20 @@ mod tests {
         let rollback = s.rollback.unwrap();
         assert_eq!(rollback.image, "ghcr.io/elavo-io/elavo:latest");
         assert_eq!(rollback.channel(), Some("latest"));
+        assert!(s.layered.is_empty());
+    }
+
+    #[test]
+    fn parse_reads_layered_packages_from_the_booted_deployment() {
+        let json = r#"{
+          "deployments": [
+            { "booted": false, "staged": true, "packages": [] },
+            { "booted": true, "requested-packages": ["uxplay"], "packages": ["uxplay"] }
+          ]
+        }"#;
+        let s = parse(json);
+        assert_eq!(s.layered.packages, ["uxplay"]);
+        assert_eq!(s.layered.names(), ["uxplay"]);
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub mod hostname;
 pub mod kanshi;
 pub mod keyfile;
 pub mod labwc;
+pub mod layered;
 pub mod network;
 pub mod outputs;
 pub mod picture;

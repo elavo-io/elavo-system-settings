@@ -20,14 +20,17 @@ pub async fn run(args: &[&str], line: impl Fn(&str)) -> Result<(), String> {
         gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_MERGE,
     )
     .map_err(|e| e.to_string())?;
-    let mut last = String::new();
+    let mut log = String::new();
     if let Some(stdout) = process.stdout_pipe() {
         let reader = gio::DataInputStream::new(&stdout);
         while let Ok(Some(text)) = reader.read_line_utf8_future(glib::Priority::DEFAULT).await {
             let text = text.trim_end();
             // A progress report is not the failure people should read.
             if !text.is_empty() && !text.starts_with("ELAVO_PROGRESS ") {
-                last = text.to_owned();
+                if !log.is_empty() {
+                    log.push('\n');
+                }
+                log.push_str(text);
             }
             line(text);
         }
@@ -35,17 +38,17 @@ pub async fn run(args: &[&str], line: impl Fn(&str)) -> Result<(), String> {
     process.wait_future().await.map_err(|e| e.to_string())?;
     match process.exit_status() {
         0 => Ok(()),
-        code => Err(failure(code, &last)),
+        code => Err(failure(code, &log)),
     }
 }
 
-/// What to tell the person when the helper did not succeed. `last` is the
-/// last line pkexec or the helper printed.
-fn failure(code: i32, last: &str) -> String {
+/// What to tell the person when the helper did not succeed. `log` is the
+/// output pkexec or the helper printed, without progress lines.
+fn failure(code: i32, log: &str) -> String {
     use crate::i18n::tr;
     // pkexec falls back to a terminal prompt when no polkit agent is
     // running, and a window has no terminal.
-    if last.contains("authentication agent") {
+    if log.contains("authentication agent") {
         return tr(
             "No password prompt is available. The polkit agent is not running in this session.",
         );
@@ -54,10 +57,10 @@ fn failure(code: i32, last: &str) -> String {
         126 | 127 => tr("The administrator password was not accepted."),
         _ => format!("{} ({code})", tr("The change failed")),
     };
-    if last.is_empty() {
+    if log.is_empty() {
         message
     } else {
-        format!("{message}\n\n{last}")
+        format!("{message}\n\n{log}")
     }
 }
 
@@ -75,9 +78,15 @@ mod tests {
     }
 
     #[test]
-    fn keeps_the_last_line() {
+    fn keeps_the_tool_output() {
         let text = failure(1, "bootc: error: no network");
         assert!(text.contains("(1)"));
         assert!(text.ends_with("bootc: error: no network"));
+        let many = failure(
+            1,
+            "Downloading\nDeployment contains local rpm-ostree modifications; cannot upgrade via bootc.",
+        );
+        assert!(many.contains("local rpm-ostree modifications"));
+        assert!(many.contains("Downloading"));
     }
 }
