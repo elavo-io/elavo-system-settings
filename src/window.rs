@@ -1,6 +1,6 @@
-//! The window: a sidebar with a search field and the person's card on the
-//! left, the open pane on the right, and a header with Back, Forward, and
-//! the pane's name.
+//! The window: a sidebar column with a search field and the person's card
+//! on the left, the open pane on the right, and a header with Back, Forward,
+//! and the pane's name.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -158,8 +158,10 @@ fn watch_sidebar_avatar(slot: &gtk::Box, letter: &str, icon: &str) {
     widgets::keep_alive(&slot, sub);
 }
 
-/// The sidebar column, shared by the title band and the list below it.
+/// The sidebar column, including the window-button band and the list.
 const SIDEBAR_WIDTH: i32 = 220;
+const MIN_WIDTH: i32 = 720;
+const MIN_HEIGHT: i32 = 500;
 
 fn nav_button(icon: &str, tooltip: &str) -> gtk::Button {
     let image = gtk::Image::builder().icon_name(icon).pixel_size(14).build();
@@ -191,7 +193,13 @@ impl Window {
             .default_height(height)
             .show_menubar(false)
             .build();
+        window.set_size_request(MIN_WIDTH, MIN_HEIGHT);
         add_edit_actions(&window);
+        // The title band lives in each column, so the window has no title bar
+        // of its own. An empty, hidden widget keeps GTK from adding the default one.
+        let hidden_titlebar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        hidden_titlebar.set_visible(false);
+        window.set_titlebar(Some(&hidden_titlebar));
 
         let back = nav_button("go-previous-symbolic", &tr("Back"));
         let forward = nav_button("go-next-symbolic", &tr("Forward"));
@@ -212,27 +220,18 @@ impl Window {
         let content_header = gtk::Box::builder()
             .spacing(12)
             .hexpand(true)
-            .vexpand(true)
             .css_classes(["settings-content-header"])
             .build();
         nav.set_valign(gtk::Align::Center);
         title.set_valign(gtk::Align::Center);
         content_header.append(&nav);
         content_header.append(&title);
-        // The title band is two columns, the same split as the body. The
-        // sidebar's band holds the window buttons. Back, Forward, and the
-        // page title sit over the page. A header bar across the whole window
-        // would put that title over the sidebar.
-        let sidebar_bar = gtk::HeaderBar::builder()
-            .show_title_buttons(true)
+        let sidebar_bar = gtk::Box::builder()
             .css_classes(["settings-sidebar-bar"])
             .build();
-        sidebar_bar.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
-        let chrome = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        chrome.append(&sidebar_bar);
-        chrome.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        chrome.append(&content_header);
-        window.set_titlebar(Some(&gtk::WindowHandle::builder().child(&chrome).build()));
+        let start_controls = gtk::WindowControls::new(gtk::PackType::Start);
+        start_controls.set_valign(gtk::Align::Center);
+        sidebar_bar.append(&start_controls);
 
         let search = gtk::SearchEntry::builder()
             .placeholder_text(tr("Search"))
@@ -252,15 +251,15 @@ impl Window {
             .build();
         side_content.append(&user_card());
         side_content.append(&sidebar);
+        // One sidebar column and one content column, so the window buttons
+        // sit over the sidebar and the two sides cannot drift apart or overlap.
         let side = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .width_request(SIDEBAR_WIDTH)
+            .hexpand(false)
             .css_classes(["settings-sidebar"])
             .build();
-        sidebar_bar.set_width_request(SIDEBAR_WIDTH);
-        let columns = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
-        columns.add_widget(&sidebar_bar);
-        columns.add_widget(&side);
+        side.append(&gtk::WindowHandle::builder().child(&sidebar_bar).build());
         side.append(&search);
         side.append(
             &gtk::ScrolledWindow::builder()
@@ -276,10 +275,17 @@ impl Window {
             .hexpand(true)
             .vexpand(true)
             .build();
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        content.append(&gtk::WindowHandle::builder().child(&content_header).build());
+        content.append(&stack);
         let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         body.append(&side);
         body.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        body.append(&stack);
+        body.append(&content);
         window.set_child(Some(&body));
 
         let this = Rc::new(Self {

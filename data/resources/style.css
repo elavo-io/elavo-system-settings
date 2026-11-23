@@ -1,15 +1,10 @@
 /* System Settings. Colors come from the GTK theme; only shape and spacing
  * are set here, plus the sidebar tiles, which are fixed colors on purpose. */
 
-.settings-sidebar {
-  background-color: alpha(currentColor, 0.04);
-}
-
-/* The sidebar's top band. Same surface as the list, so the column reads as
-   one piece. The theme's header fill and its bottom rule would split it. */
-headerbar.settings-sidebar-bar {
-  background-color: alpha(currentColor, 0.04);
-  background-image: none;
+/* The sidebar column is one surface. The window-button band has no fill of
+   its own, so the theme's header fill and bottom rule cannot split it. */
+.settings-sidebar-bar {
+  background: none;
   border: none;
   box-shadow: none;
 }
@@ -393,23 +388,21 @@ headerbar.settings-sidebar-bar {
   font-weight: 700;
 }
 
-/* Concentric corners. The window is 16px round; the sidebar floats 4px
-   inside it, so its corners are 16 - 4 = 12px and the two curves stay
-   parallel. The title-bar band and the list below are one panel. */
-headerbar.settings-sidebar-bar {
-  margin: 4px 0 0 4px;
-  border-radius: 12px 12px 0 0;
+/* Concentric corners. The window is 16px round; the sidebar column floats
+   4px inside it, so its corners are 16 - 4 = 12px and the two curves stay
+   parallel. The window-button band and the list are one panel. */
+.settings-sidebar {
+  margin: 4px 0 4px 4px;
+  border-radius: 12px;
   background-color: alpha(currentColor, 0.06);
 }
 
-.settings-sidebar {
-  margin: 0 0 4px 4px;
-  border-radius: 0 0 12px 12px;
-  background-color: alpha(currentColor, 0.06);
+.settings-sidebar-bar {
+  min-height: 48px;
+  padding: 0 10px;
 }
 
 /* The 4px gap replaces the hairline beside the panel. */
-headerbar.settings-sidebar-bar + separator,
 .settings-sidebar + separator {
   min-width: 4px;
   background: none;

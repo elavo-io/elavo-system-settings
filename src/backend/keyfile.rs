@@ -329,7 +329,7 @@ pub mod state {
         let file = super::load(FILE);
         let w = super::integer(&file, GROUP, "Width")?;
         let h = super::integer(&file, GROUP, "Height")?;
-        Some((w.clamp(640, 4000) as i32, h.clamp(480, 4000) as i32))
+        Some((w.clamp(720, 4000) as i32, h.clamp(500, 4000) as i32))
     }
 
     pub fn save(width: i32, height: i32) {
