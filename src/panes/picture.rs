@@ -591,6 +591,7 @@ fn build(parent: &gtk::Widget, conn: gio::DBusConnection) -> Rc<Picker> {
             real_name: String::new(),
             admin: false,
             icon: String::new(),
+            directory: false,
         }),
         on_done: RefCell::new(None),
         stack: stack.clone(),

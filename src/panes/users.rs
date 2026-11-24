@@ -43,6 +43,7 @@ impl Pane {
             real_name: glib::real_name().to_string_lossy().into_owned(),
             admin: false,
             icon: String::new(),
+            directory: false,
         };
         let content = gtk::Box::builder().spacing(12).build();
         content.append(&avatar(&me));
@@ -78,10 +79,11 @@ impl Pane {
                     .xalign(0.0)
                     .build(),
             );
-            let mut kind = if user.admin {
-                tr("Administrator")
-            } else {
-                tr("Standard")
+            let mut kind = match (user.directory, user.admin) {
+                (true, true) => tr("Directory Administrator"),
+                (true, false) => tr("Directory Account"),
+                (false, true) => tr("Administrator"),
+                (false, false) => tr("Standard"),
             };
             if user.is_current() {
                 kind = format!("{kind} · {}", tr("You"));
@@ -96,10 +98,14 @@ impl Pane {
     fn menu(self: &Rc<Self>, user: &User) -> gtk::MenuButton {
         let actions = gio::SimpleActionGroup::new();
         let menu = gio::Menu::new();
-        menu.append(Some(&tr("Change Name…")), Some("user.name"));
-        menu.append(Some(&tr("Change Password…")), Some("user.password"));
+        // A directory account's name, password, and rights are changed in
+        // the directory. Only the picture is this computer's.
+        if !user.directory {
+            menu.append(Some(&tr("Change Name…")), Some("user.name"));
+            menu.append(Some(&tr("Change Password…")), Some("user.password"));
+        }
         menu.append(Some(&tr("Change Picture…")), Some("user.picture"));
-        if !user.is_current() {
+        if !user.is_current() && !user.directory {
             let admin = if user.admin {
                 tr("Make Standard User")
             } else {
