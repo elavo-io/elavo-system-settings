@@ -167,6 +167,27 @@ pub fn nav_row(
 }
 
 /// The top of a hub page: a large tile, the title, and what it covers.
+/// Break `text` into lines of at most `width` characters, on word
+/// boundaries. GTK's label wrap follows the allocated width, which for
+/// a heading is the whole page, and this GTK has no CSS `max-width`.
+pub fn wrap_words(text: &str, width: usize) -> String {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.len() + 1 + word.len() > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines.join("\n")
+}
+
 pub fn hub_header(icon: &str, color: &str, title: &str, text: &str) -> gtk::Box {
     let header = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -179,18 +200,27 @@ pub fn hub_header(icon: &str, color: &str, title: &str, text: &str) -> gtk::Box 
     header.append(
         &gtk::Label::builder()
             .label(title)
+            .halign(gtk::Align::Center)
             .css_classes(["hub-title"])
             .build(),
     );
-    header.append(
-        &gtk::Label::builder()
-            .label(text)
-            .wrap(true)
-            .justify(gtk::Justification::Center)
-            .max_width_chars(60)
-            .css_classes(["caption"])
-            .build(),
-    );
+    // A wrapping label's natural width is the unwrapped line, so the
+    // parent would give it the whole row and it would never wrap. The
+    // holder is a fixed 420 px column; the label fills that and wraps.
+    let holder = gtk::Box::builder()
+        .halign(gtk::Align::Center)
+        .css_classes(["hub-caption-holder"])
+        .build();
+    let caption = gtk::Label::builder()
+        .label(wrap_words(text, 42))
+        .wrap(true)
+        .justify(gtk::Justification::Center)
+        .hexpand(true)
+        .css_classes(["caption"])
+        .build();
+    caption.set_natural_wrap_mode(gtk::NaturalWrapMode::Word);
+    holder.append(&caption);
+    header.append(&holder);
     header
 }
 
@@ -317,6 +347,20 @@ pub async fn choose(
     default: usize,
 ) -> usize {
     choose_inner(widget, message, detail, buttons, cancel, default, None, "").await
+}
+
+/// A choice whose button at `style.0` gets the CSS class `style.1`
+/// (for example `destructive-action` on Leave).
+pub async fn choose_styled(
+    widget: &impl IsA<gtk::Widget>,
+    message: &str,
+    detail: &str,
+    buttons: &[&str],
+    cancel: usize,
+    default: usize,
+    style: Option<(usize, &str)>,
+) -> usize {
+    choose_inner(widget, message, detail, buttons, cancel, default, style, "").await
 }
 
 #[allow(deprecated, clippy::too_many_arguments)]
@@ -586,4 +630,31 @@ pub fn status_label() -> gtk::Label {
 pub fn set_status(label: &gtk::Label, text: &str) {
     label.set_label(text);
     label.set_visible(!text.is_empty());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap_words;
+
+    #[test]
+    fn wraps_a_long_heading_on_word_boundaries() {
+        let text = "Join an Active Directory domain or a FreeIPA realm so people can sign in with their work account. Their files stay on this computer, and they can sign in when the directory can't be reached.";
+        let wrapped = wrap_words(text, 42);
+        for line in wrapped.lines() {
+            assert!(line.len() <= 42, "{line:?} is {} characters", line.len());
+        }
+        assert!(wrapped.contains('\n'));
+        assert_eq!(
+            wrapped.split_whitespace().collect::<Vec<_>>(),
+            text.split_whitespace().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn leaves_a_short_line_alone() {
+        assert_eq!(
+            wrap_words("This computer is joined to a directory.", 42),
+            "This computer is joined to a directory."
+        );
+    }
 }

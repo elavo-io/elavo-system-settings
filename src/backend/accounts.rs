@@ -89,7 +89,7 @@ async fn user(conn: &gio::DBusConnection, path: &str) -> Option<User> {
 }
 
 /// The `AdminGroup=` values in directory.conf's text.
-fn admin_groups(text: &str) -> Vec<String> {
+pub(crate) fn admin_groups(text: &str) -> Vec<String> {
     text.lines()
         .filter_map(|line| line.trim().strip_prefix("AdminGroup="))
         .map(|group| group.trim().to_owned())
@@ -109,7 +109,7 @@ fn in_admin_group(name: &str) -> bool {
     !wanted.is_empty() && groups_of(name).iter().any(|gid| wanted.contains(gid))
 }
 
-fn gid_of(group: &str) -> Option<libc::gid_t> {
+pub(crate) fn gid_of(group: &str) -> Option<libc::gid_t> {
     let group = std::ffi::CString::new(group).ok()?;
     let mut entry: libc::group = unsafe { std::mem::zeroed() };
     let mut result: *mut libc::group = std::ptr::null_mut();

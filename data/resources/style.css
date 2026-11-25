@@ -330,6 +330,10 @@
   margin: 4px 24px 10px;
 }
 
+.hub-caption-holder {
+  min-width: 420px;
+}
+
 .hub-title {
   font-size: 17px;
   font-weight: bold;

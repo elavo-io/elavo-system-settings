@@ -183,6 +183,53 @@ pub struct Debounce {
     delay_ms: u64,
 }
 
+/// This process's start time, as polkit identifies a process.
+fn start_time() -> Option<u64> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let after = stat.rsplit_once(')')?.1;
+    // Field 22 overall; after the name, fields start at 3.
+    after.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// Ask polkit for `action`, showing a password prompt when needed.
+/// `Ok(true)` means it was granted (now or already kept), `Ok(false)`
+/// means the person cancelled.
+pub async fn authorize(action: &str) -> Result<bool, String> {
+    let conn = system().ok_or("no system bus")?;
+    let subject: HashMap<String, glib::Variant> = HashMap::from([
+        ("pid".to_owned(), std::process::id().to_variant()),
+        (
+            "start-time".to_owned(),
+            start_time().unwrap_or(0).to_variant(),
+        ),
+    ]);
+    let details: HashMap<String, String> = HashMap::new();
+    let reply = call(
+        &conn,
+        "org.freedesktop.PolicyKit1",
+        "/org/freedesktop/PolicyKit1/Authority",
+        "org.freedesktop.PolicyKit1.Authority",
+        "CheckAuthorization",
+        Some(
+            (
+                ("unix-process", subject),
+                action,
+                details,
+                1u32, // AllowUserInteraction
+                "",
+            )
+                .to_variant(),
+        ),
+    )
+    .await
+    .map_err(|e| e.message().to_owned())?;
+    Ok(reply
+        .child_value(0)
+        .child_value(0)
+        .get::<bool>()
+        .unwrap_or(false))
+}
+
 impl Debounce {
     pub fn new(delay_ms: u64) -> std::rc::Rc<Self> {
         std::rc::Rc::new(Self {

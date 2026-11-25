@@ -12,6 +12,7 @@ mod applications;
 mod bluetooth;
 mod datetime;
 mod defaults;
+mod directory;
 mod displays;
 mod dock;
 mod drivers;
@@ -336,6 +337,31 @@ pub fn all() -> Vec<Pane> {
             group: 5,
             parent: None,
             build: touchscreen::build,
+        },
+        // Opened from Users & Groups
+        Pane {
+            id: "directory",
+            title: || tr("Domain"),
+            icon: "network-workgroup-symbolic",
+            color: "graphite",
+            keywords: &[
+                "domain",
+                "active directory",
+                "ad",
+                "freeipa",
+                "ipa",
+                "realm",
+                "kerberos",
+                "join",
+                "leave",
+                "network account",
+                "directory",
+                "ldap",
+                "sssd",
+            ],
+            group: 0,
+            parent: Some("users"),
+            build: directory::build,
         },
         // Opened from General
         Pane {

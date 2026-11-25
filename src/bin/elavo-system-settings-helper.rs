@@ -19,11 +19,18 @@
 //! elavo-system-settings-helper wifi-driver broadcom|brcmfmac
 //! elavo-system-settings-helper switch-nvidia
 //! elavo-system-settings-helper switch-elavo
+//! elavo-system-settings-helper domain-admins [GROUP...]
 //! ```
 //!
 //! `auto-run` is what `elavo-system-update.service` runs as root on a
 //! timer. It does what `/etc/elavo/updates.conf` says, so turning automatic
 //! updates on asks for a password once and never again.
+//!
+//! `domain-admins` takes directory group names, the one free-text argument:
+//! each must be a group the system can look up, and it only ever becomes an
+//! `AdminGroup=` line in `/etc/elavo/directory.conf`, which
+//! `elavo-directory apply` then turns into sudo, polkit, and Applications
+//! folder rights.
 
 #[allow(dead_code)]
 #[path = "../backend/auto.rs"]
@@ -49,6 +56,11 @@ const LID_DROPIN: &str = "/etc/systemd/logind.conf.d/50-elavo-lid.conf";
 const GREETER_DIR: &str = "/etc/elavo";
 const GREETER_CONF: &str = "/etc/elavo/greeter.conf";
 const ELAVO_DIR: &str = "/etc/elavo";
+const DIRECTORY_CONF: &str = "/etc/elavo/directory.conf";
+const ELAVO_DIRECTORY: &str = "/usr/libexec/elavo-directory";
+const KEYTAB: &str = "/etc/krb5.keytab";
+/// More administrator groups than anyone needs, and a bound on argv.
+const MAX_ADMIN_GROUPS: usize = 16;
 const STAGED_LOCKED: &str = "/run/ostree/staged-deployment-locked";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -74,6 +86,8 @@ enum Command {
     SwitchNvidia,
     /// `bootc switch` to `elavo` on the same tag, from an NVIDIA edition.
     SwitchElavo,
+    /// The directory groups whose members administer this computer.
+    DomainAdmins(Vec<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +170,21 @@ fn parse(args: &[String]) -> Result<Command, String> {
         ["wifi-driver", "brcmfmac"] => Ok(Command::WifiDriver(WifiDriver::Brcmfmac)),
         ["switch-nvidia"] => Ok(Command::SwitchNvidia),
         ["switch-elavo"] => Ok(Command::SwitchElavo),
+        ["domain-admins", groups @ ..] => {
+            if groups.len() > MAX_ADMIN_GROUPS {
+                return Err("too many groups".to_owned());
+            }
+            let mut out: Vec<String> = Vec::new();
+            for group in groups {
+                if !valid_group_name(group) {
+                    return Err(format!("not a group name: {group:?}"));
+                }
+                if !out.iter().any(|g| g.eq_ignore_ascii_case(group)) {
+                    out.push((*group).to_owned());
+                }
+            }
+            Ok(Command::DomainAdmins(out))
+        }
         _ => Err(format!("unsupported command: {}", args.join(" "))),
     }
 }
@@ -195,6 +224,112 @@ fn greeter_conf(show: LoginWindow) -> String {
         "# Written by System Settings.\n[Login]\nShow={}\n",
         show.value()
     )
+}
+
+/// A directory group name that can sit on one `AdminGroup=` line: no
+/// control characters, no edge spaces, not a comment.
+fn valid_group_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 256
+        && name.trim() == name
+        && !name.starts_with('#')
+        && !name.starts_with(';')
+        && !name.chars().any(char::is_control)
+}
+
+fn group_exists(name: &str) -> bool {
+    let Ok(group) = std::ffi::CString::new(name) else {
+        return false;
+    };
+    let mut entry: libc::group = unsafe { std::mem::zeroed() };
+    let mut result: *mut libc::group = std::ptr::null_mut();
+    let mut buffer = vec![0 as libc::c_char; 64 * 1024];
+    let status = unsafe {
+        libc::getgrnam_r(
+            group.as_ptr(),
+            &mut entry,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    status == 0 && !result.is_null()
+}
+
+/// directory.conf with its `AdminGroup=` lines replaced by `groups`. The
+/// new lines go where the old ones were, else under the commented example,
+/// else at the end of `[Directory]`. Everything else stays as it was.
+fn with_admin_groups(text: &str, groups: &[String]) -> String {
+    let is_setting = |line: &str| {
+        line.trim_start()
+            .strip_prefix("AdminGroup")
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let anchor = lines
+        .iter()
+        .position(|l| is_setting(l))
+        .map(|i| (i, false))
+        .or_else(|| {
+            lines
+                .iter()
+                .position(|l| l.trim_start().starts_with("#AdminGroup"))
+                .map(|i| (i, true))
+        })
+        .or_else(|| {
+            let header = lines.iter().position(|l| l.trim() == "[Directory]")?;
+            let end = lines[header + 1..]
+                .iter()
+                .position(|l| l.trim_start().starts_with('['))
+                .map(|n| header + n)
+                .unwrap_or(lines.len() - 1);
+            Some((end, true))
+        });
+    let new_lines: Vec<String> = groups.iter().map(|g| format!("AdminGroup={g}")).collect();
+    let mut out: Vec<String> = Vec::new();
+    match anchor {
+        None => {
+            out.extend(lines.iter().map(|l| (*l).to_owned()));
+            if !out.is_empty() {
+                out.push(String::new());
+            }
+            out.push("[Directory]".to_owned());
+            out.extend(new_lines);
+        }
+        Some((at, after)) => {
+            for (i, line) in lines.iter().enumerate() {
+                if i == at && !after {
+                    out.extend(new_lines.iter().cloned());
+                }
+                if !is_setting(line) {
+                    out.push((*line).to_owned());
+                }
+                if i == at && after {
+                    out.extend(new_lines.iter().cloned());
+                }
+            }
+        }
+    }
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
+}
+
+fn set_admin_groups(groups: &[String]) -> Result<(), String> {
+    if let Some(missing) = groups.iter().find(|g| !group_exists(g)) {
+        return Err(format!("no group named \"{missing}\" was found"));
+    }
+    let text = std::fs::read_to_string(DIRECTORY_CONF).unwrap_or_default();
+    write_conf(DIRECTORY_CONF, &with_admin_groups(&text, groups))?;
+    // Applied now when joined; otherwise the next join applies it.
+    if Path::new(KEYTAB).exists() && Path::new(ELAVO_DIRECTORY).exists() {
+        run({
+            let mut p = tool(ELAVO_DIRECTORY);
+            p.arg("apply");
+            p
+        })?;
+    }
+    Ok(())
 }
 
 fn tool(program: &str) -> Process {
@@ -637,6 +772,7 @@ fn execute(command: Command) -> Result<(), String> {
             p.arg(&target);
             run_with_progress(p, fds)
         }
+        Command::DomainAdmins(groups) => set_admin_groups(&groups),
         Command::SwitchElavo => {
             let current = booted()?;
             let target = drivers::base_image_target(&current.image)
@@ -676,7 +812,7 @@ fn main() -> ExitCode {
     if !Path::new("/run/ostree-booted").exists()
         && !matches!(
             command,
-            Command::Lid(_) | Command::LoginWindow(_) | Command::Auto(_)
+            Command::Lid(_) | Command::LoginWindow(_) | Command::Auto(_) | Command::DomainAdmins(_)
         )
     {
         eprintln!(
@@ -921,5 +1057,59 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(anyway_plan(&bad), AnywayPlan::ResetThenUpgrade);
+    }
+
+    #[test]
+    fn domain_admins_arguments() {
+        assert_eq!(
+            parse(&args(&["domain-admins"])),
+            Ok(Command::DomainAdmins(vec![]))
+        );
+        assert_eq!(
+            parse(&args(&[
+                "domain-admins",
+                "Domain Admins",
+                "domain admins",
+                "ops"
+            ])),
+            Ok(Command::DomainAdmins(vec![
+                "Domain Admins".to_owned(),
+                "ops".to_owned()
+            ]))
+        );
+        assert!(parse(&args(&["domain-admins", "a\nAdminGroup=x"])).is_err());
+        assert!(parse(&args(&["domain-admins", " padded"])).is_err());
+        assert!(parse(&args(&["domain-admins", "#x"])).is_err());
+        assert!(parse(&args(&["domain-admins", ""])).is_err());
+        let many: Vec<String> = (0..17).map(|n| format!("g{n}")).collect();
+        let mut list = vec!["domain-admins".to_owned()];
+        list.extend(many);
+        assert!(parse(&list).is_err());
+    }
+
+    #[test]
+    fn admin_group_lines_replace_in_place() {
+        let image = "# c\n[Directory]\n# Example: AdminGroup=Domain Admins\n#AdminGroup=\n# more\nShortNames=true\n";
+        let set = with_admin_groups(image, &["Domain Admins".to_owned(), "ops".to_owned()]);
+        assert_eq!(
+            set,
+            "# c\n[Directory]\n# Example: AdminGroup=Domain Admins\n#AdminGroup=\nAdminGroup=Domain Admins\nAdminGroup=ops\n# more\nShortNames=true\n"
+        );
+        let again = with_admin_groups(&set, &["admins".to_owned()]);
+        assert_eq!(
+            again,
+            "# c\n[Directory]\n# Example: AdminGroup=Domain Admins\n#AdminGroup=\nAdminGroup=admins\n# more\nShortNames=true\n"
+        );
+        let cleared = with_admin_groups(&again, &[]);
+        assert!(!cleared.lines().any(|l| l.starts_with("AdminGroup")));
+        assert!(cleared.contains("ShortNames=true"));
+        assert_eq!(
+            with_admin_groups("", &["g".to_owned()]),
+            "[Directory]\nAdminGroup=g\n"
+        );
+        assert_eq!(
+            with_admin_groups("[Directory]\nShortNames=true\n", &["g".to_owned()]),
+            "[Directory]\nShortNames=true\nAdminGroup=g\n"
+        );
     }
 }

@@ -319,6 +319,40 @@ pub fn build() -> gtk::Widget {
         "Adding, deleting, and changing another person's account asks for an administrator's password.",
     )));
 
+    // Joining a directory lives one level down, with its state on the row.
+    if crate::backend::directory::supported() {
+        let slot = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        page.append(&slot);
+        let fill = {
+            let slot = slot.clone();
+            let conn = conn.clone();
+            move || {
+                let slot = slot.clone();
+                let conn = conn.clone();
+                glib::spawn_future_local(async move {
+                    let status = super::directory::summary(&conn).await;
+                    while let Some(child) = slot.first_child() {
+                        slot.remove(&child);
+                    }
+                    slot.append(&widgets::group(
+                        Some(&tr("Network Accounts")),
+                        &[widgets::nav_row(
+                            "network-workgroup-symbolic",
+                            "graphite",
+                            &tr("Domain"),
+                            Some(&status),
+                            Some("directory"),
+                        )],
+                    ));
+                });
+            }
+        };
+        fill();
+        page.connect_map(move |_| fill());
+    }
+
     let pane = Rc::new(Pane {
         conn: conn.clone(),
         list,

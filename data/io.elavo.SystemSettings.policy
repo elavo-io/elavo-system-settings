@@ -152,4 +152,29 @@
     <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
     <annotate key="org.freedesktop.policykit.exec.argv1">login-window</annotate>
   </action>
+  <action id="io.elavo.SystemSettings.domain-admins">
+    <description>Choose which directory groups administer this computer</description>
+    <message>Authentication is required to choose which directory groups administer this computer.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">domain-admins</annotate>
+  </action>
+
+  <!-- CheckAuthorization only: not a helper command. Authorizing this
+       action also authorizes realmd's join and login-policy actions, so
+       an Active Directory join asks for a password once. -->
+  <action id="io.elavo.SystemSettings.domain-join">
+    <description>Join this computer to a directory</description>
+    <message>Authentication is required to join this computer to a directory.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.imply">org.freedesktop.realmd.configure-realm org.freedesktop.realmd.login-policy</annotate>
+  </action>
 </policyconfig>

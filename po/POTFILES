@@ -1,13 +1,16 @@
 src/app.rs
 src/backend/accent.rs
 src/backend/helper.rs
+src/backend/ipa.rs
 src/backend/power.rs
+src/backend/realm.rs
 src/backend/updates.rs
 src/panes/about.rs
 src/panes/appearance.rs
 src/panes/applications.rs
 src/panes/bluetooth.rs
 src/panes/datetime.rs
+src/panes/directory.rs
 src/panes/displays.rs
 src/panes/general.rs
 src/panes/keyboard.rs
