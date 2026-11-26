@@ -20,6 +20,7 @@
 //! elavo-system-settings-helper switch-nvidia
 //! elavo-system-settings-helper switch-elavo
 //! elavo-system-settings-helper domain-admins [GROUP...]
+//! elavo-system-settings-helper startup-disk current|previous|recovery|other:<id> auto|hidden|always
 //! ```
 //!
 //! `auto-run` is what `elavo-system-update.service` runs as root on a
@@ -44,8 +45,13 @@ mod drivers;
 #[path = "../backend/layered.rs"]
 mod layered;
 
+#[allow(dead_code)]
+#[path = "../backend/startup.rs"]
+mod startup;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::FromRawFd;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command as Process, ExitCode, Stdio};
 use std::sync::{Arc, Mutex};
@@ -88,6 +94,11 @@ enum Command {
     SwitchElavo,
     /// The directory groups whose members administer this computer.
     DomainAdmins(Vec<String>),
+    /// Default boot option and rEFInd menu visibility.
+    StartupDisk {
+        default: startup::DefaultTarget,
+        menu: startup::MenuVisibility,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +181,13 @@ fn parse(args: &[String]) -> Result<Command, String> {
         ["wifi-driver", "brcmfmac"] => Ok(Command::WifiDriver(WifiDriver::Brcmfmac)),
         ["switch-nvidia"] => Ok(Command::SwitchNvidia),
         ["switch-elavo"] => Ok(Command::SwitchElavo),
+        ["startup-disk", def, menu] => {
+            let default = startup::DefaultTarget::from_arg(def)
+                .ok_or_else(|| format!("unsupported command: startup-disk {def} {menu}"))?;
+            let menu = startup::MenuVisibility::from_arg(menu)
+                .ok_or_else(|| format!("unsupported command: startup-disk {def} {menu}"))?;
+            Ok(Command::StartupDisk { default, menu })
+        }
         ["domain-admins", groups @ ..] => {
             if groups.len() > MAX_ADMIN_GROUPS {
                 return Err("too many groups".to_owned());
@@ -773,6 +791,7 @@ fn execute(command: Command) -> Result<(), String> {
             run_with_progress(p, fds)
         }
         Command::DomainAdmins(groups) => set_admin_groups(&groups),
+        Command::StartupDisk { default, menu } => set_startup_disk(default, menu),
         Command::SwitchElavo => {
             let current = booted()?;
             let target = drivers::base_image_target(&current.image)
@@ -794,6 +813,33 @@ fn execute(command: Command) -> Result<(), String> {
             run_with_progress(p, fds)
         }
     }
+}
+
+fn set_startup_disk(
+    default: startup::DefaultTarget,
+    menu: startup::MenuVisibility,
+) -> Result<(), String> {
+    if !Path::new(startup::EFI_DIR).is_dir() {
+        return Err("Startup Disk requires UEFI.".to_owned());
+    }
+    if drivers::secure_boot_enabled() {
+        return Err(
+            "Secure Boot is on and rEFInd is not signed for it; GRUB stays the boot menu."
+                .to_owned(),
+        );
+    }
+    if !Path::new(startup::ELAVO_REFIND).is_file() || !Path::new(startup::REFIND_EFI).is_file() {
+        return Err("rEFInd is not installed on this computer.".to_owned());
+    }
+    let cfg = startup::Config { default, menu };
+    write_conf(startup::CONF, &cfg.format())?;
+    std::fs::set_permissions(startup::CONF, std::fs::Permissions::from_mode(0o644))
+        .map_err(|e| e.to_string())?;
+    run({
+        let mut p = tool(startup::ELAVO_REFIND);
+        p.arg("sync");
+        p
+    })
 }
 
 fn main() -> ExitCode {
@@ -878,6 +924,20 @@ mod tests {
         );
         assert_eq!(parse(&args(&["switch-nvidia"])), Ok(Command::SwitchNvidia));
         assert_eq!(parse(&args(&["switch-elavo"])), Ok(Command::SwitchElavo));
+        assert_eq!(
+            parse(&args(&["startup-disk", "previous", "always"])),
+            Ok(Command::StartupDisk {
+                default: startup::DefaultTarget::Previous,
+                menu: startup::MenuVisibility::Always,
+            })
+        );
+        assert_eq!(
+            parse(&args(&["startup-disk", "other:Microsoft", "hidden"])),
+            Ok(Command::StartupDisk {
+                default: startup::DefaultTarget::Other("Microsoft".into()),
+                menu: startup::MenuVisibility::Hidden,
+            })
+        );
     }
 
     #[test]
@@ -907,6 +967,11 @@ mod tests {
             &["switch-nvidia", "elavo-nvidia"],
             &["switch-elavo", "elavo"],
             &["switch-elavo", "ghcr.io/elavo-io/elavo:latest"],
+            &["startup-disk"],
+            &["startup-disk", "current"],
+            &["startup-disk", "current", "never"],
+            &["startup-disk", "other:../bad", "hidden"],
+            &["startup-disk", "current", "hidden", "extra"],
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }

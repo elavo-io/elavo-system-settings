@@ -411,3 +411,20 @@
   min-width: 4px;
   background: none;
 }
+
+.startup-tile {
+  border-radius: 10px;
+  padding: 12px 14px;
+  min-width: 112px;
+  border: 2px solid transparent;
+  background-color: alpha(currentColor, 0.04);
+}
+
+.startup-tile:hover {
+  background-color: alpha(currentColor, 0.08);
+}
+
+.startup-tile:checked {
+  border-color: var(--accent-bg-color, @accent_bg_color);
+  background-color: alpha(var(--accent-bg-color, @accent_bg_color), 0.16);
+}

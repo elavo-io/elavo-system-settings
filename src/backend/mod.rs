@@ -27,6 +27,7 @@ pub mod pulse;
 pub mod realm;
 pub mod secret;
 pub mod sharing;
+pub mod startup;
 pub mod sysinfo;
 pub mod timedate;
 pub mod updates;

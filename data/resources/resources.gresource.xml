@@ -3,6 +3,7 @@
   <gresource prefix="/io/elavo/SystemSettings">
     <file>style.css</file>
     <file preprocess="xml-stripblanks">about-sun.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/devices/elavo-startup-disk-symbolic.svg</file>
     <file>light-mode.jpg</file>
     <file>dark-mode.jpg</file>
   </gresource>

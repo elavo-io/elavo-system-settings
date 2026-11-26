@@ -177,4 +177,15 @@
     </defaults>
     <annotate key="org.freedesktop.policykit.imply">org.freedesktop.realmd.configure-realm org.freedesktop.realmd.login-policy</annotate>
   </action>
+  <action id="io.elavo.SystemSettings.startup-disk">
+    <description>Change the startup disk and boot menu settings</description>
+    <message>Authentication is required to change the startup disk or boot menu settings.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/elavo-system-settings-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">startup-disk</annotate>
+  </action>
 </policyconfig>

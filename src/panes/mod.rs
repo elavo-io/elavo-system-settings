@@ -27,6 +27,7 @@ mod placeholders;
 mod power;
 mod sharing;
 mod sound;
+mod startup;
 mod storage;
 mod switcher;
 mod touchscreen;
@@ -455,6 +456,27 @@ pub fn all() -> Vec<Pane> {
             group: 1,
             parent: Some("general"),
             build: datetime::build,
+        },
+        Pane {
+            id: "startup",
+            title: || tr("Startup Disk"),
+            icon: "elavo-startup-disk-symbolic",
+            color: "graphite",
+            keywords: &[
+                "startup",
+                "startup disk",
+                "boot",
+                "bootloader",
+                "refind",
+                "grub",
+                "recovery",
+                "rollback",
+                "dual boot",
+                "default os",
+            ],
+            group: 1,
+            parent: Some("general"),
+            build: startup::build,
         },
     ]
 }

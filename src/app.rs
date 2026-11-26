@@ -50,6 +50,7 @@ fn load_css() {
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
     crate::panes::appearance::install_live_accent(&display);
+    gtk::IconTheme::for_display(&display).add_resource_path("/io/elavo/SystemSettings/icons");
 }
 
 fn menu_item(label: &str, action: &str, accel: &str) -> gio::MenuItem {
